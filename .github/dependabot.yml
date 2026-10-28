@@ -1,0 +1,13 @@
+# Mantém as "ações" do GitHub dos workflows (que estão fixadas por hash) em dia.
+# Uma vez por mês o GitHub abre um pedido de atualização (pull request) com os hashes novos:
+# você só confere que o teste passou e aceita. Para desligar, apague este arquivo.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      acoes:
+        patterns:
+          - '*'

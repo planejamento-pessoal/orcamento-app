@@ -1,0 +1,164 @@
+name: Gerar APK
+
+# Gera o APK do app Android (a "casca" que abre o app do GitHub Pages).
+# Você só precisa disto UMA vez (e de novo se mudar algo dentro da pasta android/).
+# Mudanças no app em si (pasta docs/) chegam aos celulares sozinhas, sem novo APK.
+#
+# Como usar: GitHub → aba Actions → "Gerar APK" → Run workflow. Ao terminar, o APK aparece em
+# Releases (link direto para baixar no celular) e também como arquivo da execução (Artifacts).
+#
+# Segurança deste arquivo:
+#  - o trabalho que COMPILA só tem permissão de leitura (roda código de terceiros: Gradle e plugins);
+#  - só o trabalho seguinte, que não roda código do projeto, tem permissão de criar a Release;
+#  - as ações do GitHub usadas estão fixadas pelo código exato (hash), não por "versão flutuante";
+#  - o Gradle e o gradle-wrapper.jar são conferidos por checksum antes de rodar.
+on:
+  workflow_dispatch:
+    inputs:
+      publicar:
+        description: 'Publicar o APK em Releases (link direto para baixar no celular)'
+        type: boolean
+        default: true
+  push:
+    paths:
+      - 'android/**'
+      - 'docs/index.html'
+      - '.github/workflows/android.yml'
+
+# Nenhuma permissão por padrão; cada trabalho pede só o que precisa.
+permissions: {}
+
+concurrency:
+  group: gerar-apk
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    name: Compilar
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+
+      # Não gera APK de um repositório com teste falhando (inclui: abertura de emergência do APK
+      # igual ao docs/index.html, e nenhuma chave secreta do Supabase nos arquivos).
+      - name: Testes automáticos
+        run: node --test tests/*.test.js
+
+      # O gradle-wrapper.jar roda no seu build. Confere se é o oficial do Gradle 8.9.
+      # (Se um dia você atualizar o Gradle, troque este checksum pelo do wrapper novo.)
+      - name: Conferir o gradle-wrapper.jar
+        run: echo "498495120a03b9a6ab5d155f5de3c8f0d986a449153702fb80fc80e134484f17  android/gradle/wrapper/gradle-wrapper.jar" | sha256sum -c -
+
+      # Endereço que o APK abre: https://SEU-USUARIO.github.io/NOME-DO-REPOSITORIO/
+      # (se o repositório se chamar SEU-USUARIO.github.io, é a raiz do site).
+      # Domínio próprio: cadastre a variável ORC_START_URL em Settings, Secrets and variables, Actions, Variables.
+      - name: Endereço do app dentro do APK
+        shell: bash
+        env:
+          START_URL_VAR: ${{ vars.ORC_START_URL }}
+        run: |
+          owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr 'A-Z' 'a-z')"
+          repo="${GITHUB_REPOSITORY#*/}"
+          repo_lc="$(printf '%s' "$repo" | tr 'A-Z' 'a-z')"
+          if [ -n "${START_URL_VAR:-}" ]; then
+            url="$START_URL_VAR"
+          elif [ "$repo_lc" = "${owner}.github.io" ]; then
+            url="https://${owner}.github.io/"
+          else
+            url="https://${owner}.github.io/${repo}/"
+          fi
+          if ! [[ "$url" =~ ^https://[a-z0-9.-]+/([A-Za-z0-9._~-]+/)*$ ]]; then
+            echo "Endereço inválido para o app: $url" >&2
+            exit 1
+          fi
+          echo "O APK vai abrir: $url"
+          echo "ORC_START_URL=$url" >> "$GITHUB_ENV"
+
+      - name: Garantir o Android SDK 34
+        continue-on-error: true
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Chave de assinatura (só se você cadastrou os secrets)
+        shell: bash
+        env:
+          KS_B64: ${{ secrets.ORC_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            umask 077
+            printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/orcamento.jks"
+            echo "ORC_KEYSTORE_FILE=$RUNNER_TEMP/orcamento.jks" >> "$GITHUB_ENV"
+            echo "Assinando com a sua chave."
+          else
+            echo "Sem chave cadastrada: o APK sai assinado com uma chave de teste criada agora."
+            echo "Essa chave muda a cada build: instala normalmente, mas não entra por cima do APK anterior."
+          fi
+
+      - name: Compilar
+        working-directory: android
+        env:
+          ORC_KEYSTORE_PASSWORD: ${{ secrets.ORC_KEYSTORE_PASSWORD }}
+          ORC_KEY_ALIAS: ${{ secrets.ORC_KEY_ALIAS }}
+          ORC_KEY_PASSWORD: ${{ secrets.ORC_KEY_PASSWORD }}
+          ORC_VERSION_CODE: ${{ github.run_number }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --console=plain assembleRelease
+
+      - name: Apagar a chave de assinatura do disco
+        if: always()
+        run: rm -f "$RUNNER_TEMP/orcamento.jks"
+
+      - name: Separar o APK
+        run: |
+          mkdir -p saida
+          cp android/app/build/outputs/apk/release/app-release.apk saida/orcamento.apk
+          ls -l saida
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: orcamento-apk
+          path: saida/orcamento.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  publicar:
+    name: Publicar em Releases
+    needs: apk
+    if: github.event_name == 'workflow_dispatch' && inputs.publicar
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # único lugar com permissão de escrita: criar a Release com o APK
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: orcamento-apk
+          path: saida
+
+      - name: Criar a Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          tag="apk-${RUN_NUMBER}"
+          gh release create "$tag" saida/orcamento.apk \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "APK $tag" \
+            --notes "App Orçamento (casca Android), build ${RUN_NUMBER}. Baixe o orcamento.apk no celular e instale."

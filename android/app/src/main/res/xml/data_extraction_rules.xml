@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12 em diante: nada do app (nem o login guardado na WebView) vai para o backup na
+     nuvem do Google nem é copiado quando você troca de celular. Quem decide é este arquivo;
+     android:allowBackup="false" no manifesto cobre as versões mais antigas. Seus dados continuam
+     seguros no Supabase: ao entrar de novo no celular novo, tudo volta. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>

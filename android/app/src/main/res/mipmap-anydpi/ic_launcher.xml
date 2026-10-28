@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ícone adaptativo: o desenho que você enviou (cartão FINANÇAS) sobre um fundo de madeira.
+     Sem camada "monochrome" de propósito: nos ícones temáticos do Android 13+ o app continua
+     mostrando o seu desenho, em vez de uma silhueta de uma cor só. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

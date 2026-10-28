@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Claro. Sem AppCompat/AndroidX de propósito: o app não tem dependências. -->
+    <style name="Theme.Orcamento" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/papel</item>
+        <item name="android:statusBarColor">@color/papel</item>
+        <item name="android:navigationBarColor">@color/papel</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

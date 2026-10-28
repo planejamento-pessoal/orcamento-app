@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Escuro (quando o celular está no modo escuro) -->
+    <style name="Theme.Orcamento" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/papel</item>
+        <item name="android:statusBarColor">@color/papel</item>
+        <item name="android:navigationBarColor">@color/papel</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<!-- Política de segurança de conteúdo. NÃO edite à mão: `node tools/sync-launcher.js` recalcula
+     os hashes dos blocos de script. Só roda: os 2 blocos de script escritos neste arquivo
+     (pelo hash) e blob: (os arquivos do app, que o carregador monta). Dados só podem ir
+     para este site e para o seu Supabase (o carregador ainda restringe ao endereço exato
+     do seu projeto). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-toI93IvPVewwYJ4bridattTUIv9StuC4H6yH/LIyVZg=' 'sha256-K2rgDNBOZ+ZBnAOr1sf2i64pn0AMwfhSXOXUeSUybbA=' blob:; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self' https://*.supabase.co; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#E8EFE3">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Orçamento</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="icon" href="icons/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<style>
+  /* Tela de espera, antes do CSS principal chegar */
+  html, body { margin: 0; background: #E8EFE3; color: #14241A; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  @media (prefers-color-scheme: dark) { html:not([data-theme="light"]), html:not([data-theme="light"]) body { background: #0E1912; color: #E3EDDD; } }
+  html[data-theme="dark"], html[data-theme="dark"] body { background: #0E1912; color: #E3EDDD; }
+  #boot { padding: 72px 16px; text-align: center; font-size: 18px; }
+  #boot button { margin-top: 16px; min-height: 48px; padding: 0 20px; font: inherit; font-weight: 600; }
+</style>
+<script>
+  // Tema escolhido antes da primeira pintura (evita piscar claro/escuro)
+  try { var t = localStorage.getItem('orc.tema'); if (t === 'claro') document.documentElement.setAttribute('data-theme', 'light'); else if (t === 'escuro') document.documentElement.setAttribute('data-theme', 'dark'); } catch (e) {}
+</script>
+</head>
+<body>
+<div id="app"><div id="boot" role="status">Carregando…</div></div>
+<noscript><p style="padding:24px">Este app precisa de JavaScript ligado.</p></noscript>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   Carregador. A cada abertura ele pergunta ao GitHub Pages se algum arquivo
+   mudou (pedido condicional: se nada mudou, volta vazio e rápido). Por isso
+   cada versão que você sobe para o GitHub chega sozinha nos celulares, sem
+   precisar mexer em número de versão nem reinstalar o app.
+   ?r=... na barra de endereço força baixar tudo de novo (botão "Atualizar agora").
+
+   Sem internet ou com sinal fraco: o app guarda, por conta própria, o conjunto da
+   última versão que abriu bem e usa essa cópia (sem internet na hora; com sinal
+   fraco, depois de 8 segundos). Se a internet chegar depois com versão diferente,
+   aparece o aviso "Tem uma versão nova".
+   App aberto há horas em segundo plano: ao voltar, confere de novo e avisa do mesmo
+   jeito (nunca recarrega sozinho, para não perder o que você estava digitando).
+
+   Instalado pelo Chrome (PWA): o sw.js guarda só esta página inicial, para o app
+   abrir sem internet. Ele nunca guarda o código do app, então não prende versão velha.
+
+   Este arquivo também vai dentro do APK (android/app/src/main/assets/index.html),
+   como "abertura de emergência" quando a internet falha. Depois de mudar aqui, rode
+   `node tools/sync-launcher.js` (o teste automático avisa se esquecer).
+   ════════════════════════════════════════════════════════════════════════ */
+(function () {
+  // Dentro de uma moldura (iframe) de outra página? Não abre: evita enganar o toque (clickjacking).
+  try { if (window.top !== window.self) { document.getElementById('boot').textContent = 'Este app não abre dentro de outra página.'; return; } } catch (e) {}
+
+  var CSS = 'app.css';
+  var FILES = [
+    'config.js', 'vendor/supabase.js',
+    'js/format.js', 'js/engine.js', 'js/dom.js', 'js/data.js', 'js/chart.js',
+    'js/sheets.js', 'js/auth-view.js', 'js/month-view.js', 'js/proj-view.js',
+    'js/sim-view.js', 'js/items-view.js', 'js/account-view.js', 'js/app.js'
+  ];
+  var ALL = [CSS].concat(FILES);
+  var force = /[?&]r=/.test(location.search);
+  var STORE = 'orc-app-v1', KEY = 'bundle', WAIT = 8000;
+
+  // Um arquivo. Sem internet (ou GitHub fora do ar) o erro leva a marca "net".
+  // Nunca cancelamos um pedido em andamento: cancelar a conferência faz o navegador
+  // jogar fora a cópia dele, e é justo ela que a gente quer ter no sinal fraco.
+  function get(url, mode) {
+    return fetch(url, { cache: mode }).then(function (r) {
+      if (r.status >= 500) { var e = new Error(url + ' (' + r.status + ')'); e.net = true; throw e; }
+      if (!r.ok) throw new Error(url + ' (' + r.status + ')');
+      return r.text().catch(function (err) { err.net = true; throw err; });
+    }, function (err) { err.net = true; throw err; });
+  }
+  // O conjunto inteiro, sempre do mesmo modo (nunca metade nova, metade velha).
+  function load(mode) { return Promise.all(ALL.map(function (f) { return get(f, mode); })); }
+
+  // Cópia guardada pelo próprio app: um único registro (grava inteiro ou não grava).
+  function saveCopy(parts) {
+    try {
+      if (!window.caches) return Promise.resolve();
+      return caches.open(STORE).then(function (c) {
+        return c.put(KEY, new Response(JSON.stringify(parts), { headers: { 'Content-Type': 'application/json' } }));
+      }).catch(function () {});
+    } catch (e) { return Promise.resolve(); }
+  }
+  function readCopy() {
+    try {
+      if (!window.caches) return Promise.reject(new Error('sem cache'));
+      return caches.open(STORE).then(function (c) { return c.match(KEY); }).then(function (r) {
+        if (!r) throw new Error('sem cópia');
+        return r.json();
+      }).then(function (parts) {
+        if (!Array.isArray(parts) || parts.length !== ALL.length) throw new Error('cópia incompleta');
+        for (var i = 0; i < parts.length; i++) if (typeof parts[i] !== 'string' || !parts[i]) throw new Error('cópia incompleta');
+        return parts;
+      });
+    } catch (e) { return Promise.reject(e); }
+  }
+  function differs(a, b) {
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return true;
+    return false;
+  }
+
+  // Internet (confere a versão) contra a cópia guardada. O primeiro que chegar com sucesso vence.
+  // Sem internet o erro chega na hora; com sinal fraco a espera termina em WAIT ms.
+  function start() {
+    var net = load(force ? 'reload' : 'no-cache');
+    return new Promise(function (resolve, reject) {
+      var done = false;
+      function use(parts, fresh) { if (!done) { done = true; resolve({ parts: parts, fresh: fresh, net: net }); } }
+      net.then(function (parts) { use(parts, true); }, function (err) {
+        if (done) return;
+        if (err && err.net) readCopy().then(function (p) { use(p, false); }, function () { done = true; reject(err); });
+        else { done = true; reject(err); }
+      });
+      if (!force) setTimeout(function () { if (!done) readCopy().then(function (p) { use(p, false); }, function () {}); }, WAIT);
+    });
+  }
+
+  function fail(err) {
+    var box = document.getElementById('boot') || document.getElementById('app');
+    box.textContent = '';
+    var p = document.createElement('p');
+    p.textContent = 'Não foi possível abrir o app. Confira a internet e tente de novo.';
+    var b = document.createElement('button');
+    b.textContent = 'Tentar de novo';
+    b.onclick = function () { location.reload(); };
+    box.appendChild(p); box.appendChild(b);
+    if (window.console) console.error(err);
+  }
+
+  // Aviso de versão nova (fica acima das abas, abaixo dos painéis).
+  function offer() {
+    if (document.getElementById('faixa-versao')) return;
+    var bar = document.createElement('div');
+    bar.id = 'faixa-versao'; bar.className = 'faixa-versao'; bar.setAttribute('role', 'status');
+    var t = document.createElement('span'); t.textContent = 'Tem uma versão nova do app.';
+    var b = document.createElement('button'); b.type = 'button'; b.textContent = 'Atualizar';
+    b.onclick = function () { location.reload(); };
+    bar.appendChild(t); bar.appendChild(b);
+    document.body.appendChild(bar);
+  }
+  function watch(loaded) {
+    var last = Date.now(), busy = false;
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden || busy || Date.now() - last < 15 * 60 * 1000) return;
+      busy = true; last = Date.now();
+      var guard = setTimeout(function () { busy = false; }, 30000); // conferência travada não bloqueia as próximas
+      load('no-cache').then(function (now) { if (differs(now, loaded)) offer(); })
+        .catch(function () {}).then(function () { clearTimeout(guard); busy = false; });
+    });
+  }
+
+  // Segurança: cada arquivo do app roda como script "blob:" montado aqui. A política de segurança
+  // lá em cima só aceita isso e os 2 blocos escritos neste arquivo; então um script ou um
+  // onclick que alguém consiga enfiar na página não executa nada.
+  function inject(parts, done) {
+    var st = document.createElement('style');
+    st.textContent = parts[0];
+    document.head.appendChild(st);
+    (function next(i) {
+      if (i === FILES.length) return done();
+      var url = URL.createObjectURL(new Blob([parts[i + 1] + '\n//# sourceURL=' + FILES[i]], { type: 'text/javascript' }));
+      var s = document.createElement('script');
+      s.async = false;
+      s.onload = function () { URL.revokeObjectURL(url); if (FILES[i] === 'config.js') narrow(); next(i + 1); };
+      s.onerror = function () { URL.revokeObjectURL(url); fail(new Error('o arquivo ' + FILES[i] + ' não rodou')); };
+      s.src = url;
+      document.head.appendChild(s);
+    })(0);
+  }
+  // Logo depois do config.js: limita as conexões ao endereço EXATO do seu Supabase. A política de
+  // cima libera *.supabase.co; uma segunda política só pode apertar mais, nunca afrouxar.
+  function narrow() {
+    try {
+      var u = new URL(String(window.APP_CONFIG.SUPABASE_URL).trim());
+      if (u.protocol !== 'https:' || !/^[a-z0-9-]+\.supabase\.co$/.test(u.hostname)) return;
+      var m = document.createElement('meta');
+      m.httpEquiv = 'Content-Security-Policy';
+      m.content = "connect-src 'self' " + u.origin;
+      document.head.appendChild(m);
+    } catch (e) {}
+  }
+
+  start().then(function (r) {
+    inject(r.parts, function () {
+      try { window.App.boot(); } catch (e) { return fail(e); }
+      if (r.fresh) saveCopy(r.parts);
+      else r.net.then(function (now) { if (differs(now, r.parts)) { offer(); saveCopy(now); } }, function () {});
+      watch(r.parts);
+      // Página inicial disponível sem internet quando o app é instalado pelo Chrome (veja sw.js)
+      try { if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(function () {}); } catch (e) {}
+    });
+  }).catch(fail);
+})();
+</script>
+</body>
+</html>

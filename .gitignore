@@ -1,0 +1,23 @@
+# Android / Gradle
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+android/.idea/
+android/captures/
+*.apk
+*.aab
+
+# Chaves de assinatura: NUNCA suba para o GitHub
+*.jks
+*.keystore
+keystore.properties
+
+# Node (testes)
+node_modules/
+
+# Arquivos privados e do sistema
+PRIVADO*
+.DS_Store
+Thumbs.db
+*.log

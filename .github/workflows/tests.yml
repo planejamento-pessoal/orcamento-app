@@ -1,0 +1,26 @@
+name: Testes
+
+# Roda os testes automáticos a cada envio para o GitHub. Se algum falhar, aparece um X vermelho
+# no commit (o app publicado no Pages não é bloqueado, mas você fica sabendo).
+# Os testes também procuram chaves SECRETAS do Supabase esquecidas no código.
+on:
+  push:
+  pull_request:
+
+# Só leitura: este trabalho não consegue alterar nada no repositório.
+permissions:
+  contents: read
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 22
+      - name: Testes (cálculos, formatação, contraste, arquivos do carregador, chaves)
+        run: node --test tests/*.test.js

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Cor do "papel" do app (a mesma da tela web) -->
+    <color name="papel">#E8EFE3</color>
+    <!-- Fundo do ícone (degradê de madeira): ver drawable/ic_launcher_background.xml -->
+    <color name="ic_fundo_escuro">#705438</color>
+    <color name="ic_fundo_claro">#B08A60</color>
+</resources>

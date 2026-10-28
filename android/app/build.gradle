@@ -1,0 +1,68 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Assinatura própria (opcional). O build do GitHub Actions preenche estas variáveis
+// quando você cadastra os "secrets" descritos no LEIA-ME. Sem elas o APK sai assinado
+// com uma chave de teste que o Android cria na hora. No GitHub Actions essa chave é NOVA
+// a cada build: o APK instala normalmente, mas um APK mais novo não entra "por cima" do
+// anterior (desinstale o antigo antes; seus dados ficam no Supabase). Para atualizar por
+// cima, e para cadastrar o app no Google (verificação de desenvolvedor), use chave própria.
+def ksFile = System.getenv('ORC_KEYSTORE_FILE')
+
+// Endereço do app (GitHub Pages). No GitHub Actions é montado sozinho a partir do seu usuário e
+// do nome do repositório (ORC_START_URL). Em build local sem essa variável vale o endereço padrão
+// abaixo: se o seu repositório tiver outro nome, defina ORC_START_URL antes de compilar.
+def startUrl = System.getenv('ORC_START_URL') ?: 'https://19bruno94.github.io/orcamento-app/'
+if (!(startUrl ==~ /^https:\/\/[a-z0-9.-]+\/([A-Za-z0-9._~-]+\/)*$/)) {
+    throw new GradleException("ORC_START_URL inválido (precisa ser https, terminar em / e não ter nada além do site e da pasta): " + startUrl)
+}
+
+android {
+    namespace 'com.bruno.orcamento'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.bruno.orcamento'
+        minSdk 26
+        targetSdk 34
+        // No GitHub Actions o número sobe sozinho a cada build (ORC_VERSION_CODE).
+        versionCode Integer.parseInt(System.getenv('ORC_VERSION_CODE') ?: '1')
+        versionName '1.1'
+        buildConfigField 'String', 'START_URL', "\"${startUrl}\""
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    if (ksFile) {
+        signingConfigs {
+            release {
+                storeFile file(ksFile)
+                storePassword System.getenv('ORC_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ORC_KEY_ALIAS')
+                keyPassword System.getenv('ORC_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig ksFile ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    // O APK é instalado direto (não vai para a Play Store): a checagem de "versão do Android
+    // de destino vencida" do lint de release não se aplica e poderia travar o build por causa da data.
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
