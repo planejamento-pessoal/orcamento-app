@@ -12,6 +12,6 @@
    Ao subir uma versão nova do app para o GitHub, NÃO substitua este arquivo.
    ════════════════════════════════════════════════════════════════════════ */
 window.APP_CONFIG = {
-  SUPABASE_URL: 'COLE_AQUI_A_URL_DO_PROJETO',
-  SUPABASE_ANON_KEY: 'COLE_AQUI_A_CHAVE_PUBLICA'
+  SUPABASE_URL: 'https://tgxfkeqrwahnieesnlyd.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_Jt2PgjEnd4mHCxOEuGaIMw_8E7erB6H'
 };

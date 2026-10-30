@@ -32,7 +32,8 @@
 --     vazada = gire a chave no painel do Supabase na hora.
 --   • Conta criada sem convite não enxerga nada (sem linha em "profiles" = sem acesso).
 --   • O papel de cada pessoa é lido do banco a cada pedido (bloquear vale na hora).
---   • Nenhuma função do schema "public" fica executável por anon/service_role.
+--   • Nenhuma função do schema "public" fica executável por anon/service_role (exceto funções de
+--     gatilho, que a API não consegue chamar, como a "rls_auto_enable" que o próprio Supabase instala).
 --   • Se algo ficar diferente disso, o script CANCELA tudo e diz o que está errado.
 --
 --  SE VOCÊ CRIAR FUNÇÕES NOVAS no schema "public" no futuro: logo depois de criar, rode
@@ -579,12 +580,18 @@ begin
   end if;
 
   -- nenhuma função do schema "public" (a API do Supabase publica tudo que está ali) pode ser
-  -- executada por anon nem por service_role. (Funções que vieram de extensões ficam de fora.)
+  -- executada por anon nem por service_role. Ficam de fora:
+  --  • funções que vieram de extensões;
+  --  • funções de gatilho ("returns trigger" ou "returns event_trigger"): a API não consegue chamá-las
+  --    (o Postgres responde "trigger functions can only be called as triggers"); só o próprio banco as
+  --    dispara. É o caso da rls_auto_enable(), que o Supabase instala sozinho em projetos novos (opção
+  --    "Automatically enable RLS") e que o Security Advisor lista como aviso. Este arquivo não mexe nela.
   select string_agg(p.oid::regprocedure::text, ', ' order by p.oid::regprocedure::text) into v_bad
     from pg_catalog.pg_proc p
     join pg_catalog.pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public'
      and p.prokind in ('f', 'p')
+     and p.prorettype not in ('pg_catalog.trigger'::regtype, 'pg_catalog.event_trigger'::regtype)
      and not exists (select 1 from pg_catalog.pg_depend d
                       where d.classid = 'pg_catalog.pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
      and (pg_catalog.has_function_privilege('anon', p.oid, 'execute')
@@ -597,6 +604,12 @@ begin
   foreach v_func in array v_funcs loop
     if pg_catalog.has_function_privilege('authenticated', v_func, 'execute') is distinct from (v_func = any (v_app_funcs)) then
       raise exception 'VERIFICACAO_FALHOU: permissao de execucao de % para "authenticated" esta diferente do combinado. Nada foi aplicado.', v_func;
+    end if;
+    -- as funções deste arquivo (inclusive a de gatilho, que a conferência geral acima deixa passar)
+    -- nunca ficam abertas para anon nem para service_role
+    if pg_catalog.has_function_privilege('anon', v_func, 'execute')
+       or pg_catalog.has_function_privilege('service_role', v_func, 'execute') then
+      raise exception 'VERIFICACAO_FALHOU: anon ou service_role pode executar %. Nada foi aplicado.', v_func;
     end if;
   end loop;
 end
