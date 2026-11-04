@@ -25,7 +25,8 @@
   function metaOf(it) {
     var parts = [];
     parts.push(App.sheets.typeText(it));
-    if (it.recurring) parts.push('repete desde ' + F.monthShort(it.start_month)); else parts.push('lançado mês a mês');
+    if (E.isCarryItem(it)) parts.push('conta corrente: puxa a sobra do mês anterior');
+    else if (it.recurring) parts.push('repete desde ' + F.monthShort(it.start_month)); else parts.push('lançado mês a mês');
     if (it.end_month) parts.push('termina em ' + F.monthShort(it.end_month));
     if (it.card_name) parts.push('no ' + it.card_name);
     return parts.join(', ');

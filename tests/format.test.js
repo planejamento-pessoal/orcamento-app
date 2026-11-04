@@ -90,8 +90,8 @@ test('senha nova: 10 ou mais caracteres e nada óbvio', () => {
   assert.match(F.passwordProblem('curta'), /10 caracteres/);
   assert.match(F.passwordProblem('1234567890'), /fácil de adivinhar/);
   // contém a parte do e-mail antes do @
-  assert.ok(F.passwordProblem('bruno.henrique-2026!', 'bruno.henrique@exemplo.com') !== '');
-  assert.equal(F.passwordProblem('bruno.henrique-2026!', 'outra@exemplo.com'), '');
+  assert.ok(F.passwordProblem('maria.souza-2026!', 'maria.souza@exemplo.com') !== '');
+  assert.equal(F.passwordProblem('maria.souza-2026!', 'outra@exemplo.com'), '');
   const good = ['cavalo-azul-bateria-grampo', 'sol nasce 7 vezes', 'Tr0ca-o-Pneu-do-Fusca', 'outra-senha-2x', 'minha-casa-tem-3-cachorros'];
   for (const p of good) assert.equal(F.passwordProblem(p, 'joao@exemplo.com'), '', 'deveria aceitar: ' + p);
   assert.equal(F.passwordProblem(null), 'A senha precisa de pelo menos 10 caracteres.');

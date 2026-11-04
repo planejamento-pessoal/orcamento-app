@@ -38,7 +38,8 @@ Este repositório é **público** (exigência do GitHub Pages gratuito). Por iss
 3. **Nunca sobrescreva `docs/config.js`** com a versão de outro lugar: ele guarda a ligação com o seu Supabase.
 4. Se mudar `docs/index.html`, rode `node tools/sync-launcher.js` antes de enviar (recalcula os hashes da CSP e mantém a cópia de emergência do APK igual). Os testes `tests/launcher.test.js` e `tests/seguranca.test.js` avisam se esquecer.
 5. Arquivo novo em `docs/js/` precisa entrar na lista `FILES` do `docs/index.html` (e aí rode o passo 4).
-6. Versão que mexe no banco (a 1.2.0 acrescentou as marcas de pago/recebido): rode `supabase/01_schema.sql` de novo no SQL Editor do Supabase. É seguro repetir (não apaga nada). Sem isso o app funciona, só sem a chavinha de pago/recebido.
+6. Versão que mexe no banco (a 1.2.0 acrescentou as marcas de pago/recebido; a 1.3.0, a lista de compras e a conta corrente): rode `supabase/01_schema.sql` de novo no SQL Editor do Supabase. É seguro repetir (não apaga nada). Sem isso o app funciona, só sem a chavinha de pago/recebido, sem a aba Compras e sem a conta corrente.
+7. Não mude a lista de arquivos (`FILES`) do `docs/index.html` sem necessidade: o APK já instalado leva uma cópia dele, e se a lista crescer o APK antigo não abre a cópia da versão nova sem internet até ser reinstalado. Código novo vai dentro de arquivos que já estão na lista (a aba Compras mora em `js/sim-view.js`); o `tests/launcher.test.js` trava a lista.
 
 ## Testes
 

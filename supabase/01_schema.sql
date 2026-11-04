@@ -14,7 +14,7 @@
 --  Pode rodar de novo sem medo: não apaga dados. Se você ficar sem nenhum
 --  admin, rodar de novo gera um convite de admin novo. Se você já rodou uma versão mais
 --  antiga deste arquivo, rode esta de novo: ela só acrescenta o que faltar (por exemplo, a
---  tabela do "Pago/Recebido").
+--  tabela do "Pago/Recebido", a da aba "Compras" e a coluna da "conta corrente").
 --
 --  Este arquivo NÃO contém dados pessoais — pode ficar no GitHub público.
 --
@@ -119,6 +119,25 @@ create table if not exists public.budget_items (
   constraint items_range_chk     check (end_month is null or start_month is null or end_month >= start_month)
 );
 
+-- Conta corrente (versão 1.3.0): UM item de entrada que não repete (o que guarda o dinheiro da conta) pode "puxar"
+-- todo mês o que sobrou do mês anterior. O app mostra essa sobra como a linha do item e NÃO a soma
+-- como entrada do mês (o saldo acumulado já carrega a sobra; somar de novo contaria em dobro).
+-- O valor digitado num mês passa a valer como o saldo real da conta naquele mês.
+--  • coluna nova: "add column if not exists" também atualiza bancos que já têm a tabela;
+--  • só entrada que não repete (um item que repete já tem os valores dele);
+--  • só um item de cada vez (o índice abaixo aceita no máximo uma linha com carry_over ligado).
+alter table public.budget_items add column if not exists carry_over boolean not null default false;
+do $$
+begin
+  if not exists (select 1 from pg_catalog.pg_constraint
+                  where conrelid = 'public.budget_items'::regclass and conname = 'items_carry_chk') then
+    alter table public.budget_items
+      add constraint items_carry_chk check (not carry_over or (kind = 'entrada' and not recurring));
+  end if;
+end
+$$;
+create unique index if not exists items_one_carry on public.budget_items ((true)) where carry_over;
+
 -- Valor que vale "a partir de" um mês (itens que repetem todo mês)
 create table if not exists public.item_rates (
   item_id     uuid not null references public.budget_items(id) on delete cascade,
@@ -148,6 +167,36 @@ create table if not exists public.budget_settled (
   month       date not null check (isfinite(month) and extract(day from month) = 1
                                    and month between date '2000-01-01' and date '2200-12-01'),
   primary key (item_id, month)
+);
+
+-- Compras planejadas (aba "Compras", a PRIORIDADES da planilha): o que comprar, em que ordem e
+-- se cabe no orçamento. A compra NÃO mexe em nenhuma conta do orçamento: o app só lê o saldo
+-- para dizer se cabe. Só vira gasto de verdade quando a pessoa a lança (pela aba Simular).
+create table if not exists public.purchases (
+  id           uuid primary key default gen_random_uuid(),
+  -- ordem em que foram cadastradas: desempata a lista (mesma prioridade = a mais antiga primeiro).
+  -- Contador, e não horário, porque várias compras gravadas de uma vez receberiam o mesmo horário.
+  seq          bigint generated always as identity,
+  name         text not null check (length(btrim(name)) between 1 and 80),
+  priority     smallint not null default 3 check (priority between 1 and 5),   -- 1 = menor, 5 = maior
+  status       text not null default 'nada'
+               check (status in ('nada', 'planejado', 'orcando', 'concluido')),
+  category     text check (category is null or length(category) <= 40),        -- tipo: MÓVEL, ELETRO, REFORMA...
+  supplier     text check (supplier is null or length(supplier) <= 80),        -- fornecedor
+  model        text check (model is null or length(model) <= 80),
+  est_amount   numeric(14, 2) not null default 0
+               check (est_amount between 0 and 999999999999.99),               -- valor estimado
+  final_amount numeric(14, 2)
+               check (final_amount is null or final_amount between 0 and 999999999999.99),  -- valor fechado
+  exec_month   date check (exec_month is null or (isfinite(exec_month) and extract(day from exec_month) = 1
+                                    and exec_month between date '2000-01-01' and date '2200-12-01')),
+  inst_total   numeric(14, 2)
+               check (inst_total is null or inst_total between 0 and 999999999999.99),     -- total se parcelado
+  inst_count   smallint check (inst_count is null or inst_count between 2 and 120),         -- nº de parcelas
+  created_by   uuid default auth.uid(),
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now(),
+  constraint purchases_inst_chk check (inst_total is null or inst_count is not null)
 );
 
 -- Configurações (uma linha só)
@@ -182,6 +231,10 @@ create trigger trg_items_touch before update on public.budget_items
 
 drop trigger if exists trg_entries_touch on public.budget_entries;
 create trigger trg_entries_touch before update on public.budget_entries
+  for each row execute function public.touch_updated_at();
+
+drop trigger if exists trg_purchases_touch on public.purchases;
+create trigger trg_purchases_touch before update on public.purchases
   for each row execute function public.touch_updated_at();
 
 drop trigger if exists trg_settings_touch on public.app_settings;
@@ -382,6 +435,7 @@ alter table public.budget_items    enable row level security;
 alter table public.item_rates      enable row level security;
 alter table public.budget_entries  enable row level security;
 alter table public.budget_settled  enable row level security;
+alter table public.purchases       enable row level security;
 alter table public.app_settings    enable row level security;
 
 drop policy if exists profiles_select on public.profiles;
@@ -429,6 +483,15 @@ drop policy if exists settled_delete on public.budget_settled;
 create policy settled_delete on public.budget_settled for delete to authenticated
   using ((select public.app_role()) in ('admin', 'editor'));
 
+-- purchases: todos com acesso leem; admin e editor criam, alteram e apagam
+drop policy if exists purchases_read on public.purchases;
+create policy purchases_read on public.purchases for select to authenticated
+  using ((select public.app_role()) in ('admin', 'editor', 'leitor'));
+drop policy if exists purchases_write on public.purchases;
+create policy purchases_write on public.purchases for all to authenticated
+  using ((select public.app_role()) in ('admin', 'editor'))
+  with check ((select public.app_role()) in ('admin', 'editor'));
+
 drop policy if exists settings_read on public.app_settings;
 create policy settings_read on public.app_settings for select to authenticated
   using ((select public.app_role()) in ('admin', 'editor', 'leitor'));
@@ -444,16 +507,21 @@ create policy settings_update on public.app_settings for update to authenticated
 -- O app nunca usa essa chave.
 revoke all on public.profiles, public.invites, public.invite_attempts,
               public.budget_items, public.item_rates, public.budget_entries,
-              public.budget_settled, public.app_settings
+              public.budget_settled, public.purchases, public.app_settings
   from public, anon, authenticated, service_role;
 
 -- O contador de tentativas só é usado por dentro das funções (que rodam como dono): ninguém
 -- mais precisa tocar na sequência dele (no ambiente antigo do Supabase ela nasce aberta).
+-- O mesmo vale para o contador da ordem das compras.
+-- (Quem insere em "purchases" não precisa de permissão na sequência da coluna "seq": coluna de
+--  identidade, o Postgres não confere a sequência, só a permissão de INSERT na tabela.)
 do $$
 declare
-  v_seq text := pg_get_serial_sequence('public.invite_attempts', 'id');
+  v_seq  text := pg_get_serial_sequence('public.invite_attempts', 'id');
+  v_seq2 text := pg_get_serial_sequence('public.purchases', 'seq');
 begin
   execute format('revoke all on sequence %s from public, anon, authenticated, service_role', v_seq);
+  execute format('revoke all on sequence %s from public, anon, authenticated, service_role', v_seq2);
 end
 $$;
 
@@ -461,6 +529,7 @@ grant select on public.profiles, public.invites to authenticated;
 grant select, insert, update, delete
   on public.budget_items, public.item_rates, public.budget_entries to authenticated;
 grant select, insert, delete on public.budget_settled to authenticated;
+grant select, insert, update, delete on public.purchases to authenticated;
 grant select, update on public.app_settings to authenticated;
 
 revoke all on function public.app_role()                               from public, anon, authenticated, service_role;
@@ -502,7 +571,7 @@ declare
   v_bad   text;
   v_seq   text;
   v_tables constant text[] := array['profiles', 'invites', 'invite_attempts', 'budget_items',
-                                    'item_rates', 'budget_entries', 'budget_settled', 'app_settings'];
+                                    'item_rates', 'budget_entries', 'budget_settled', 'purchases', 'app_settings'];
   v_privs  constant text[] := array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger'];
   v_colprivs constant text[] := array['select', 'insert', 'update', 'references']; -- os que também existem por coluna
   v_funcs  constant text[] := array['public.app_role()', 'public.redeem_invite(text, text)',
@@ -516,6 +585,7 @@ declare
   v_policies constant text[] := array['profiles_select', 'invites_select', 'items_read', 'items_write',
                                       'rates_read', 'rates_write', 'entries_read', 'entries_write',
                                       'settled_read', 'settled_insert', 'settled_delete',
+                                      'purchases_read', 'purchases_write',
                                       'settings_read', 'settings_update'];
 begin
   foreach v_table in array v_tables loop
@@ -557,13 +627,15 @@ begin
     raise exception 'VERIFICACAO_FALHOU: regra(s) de acesso desconhecida(s) nas tabelas do app: %. Apague com "drop policy" e rode de novo. Nada foi aplicado.', v_bad;
   end if;
 
-  -- sequência do contador de tentativas: ninguém além do dono mexe nela
-  v_seq := pg_catalog.pg_get_serial_sequence('public.invite_attempts', 'id');
-  foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
-    foreach v_priv in array array['usage', 'select', 'update'] loop
-      if pg_catalog.has_sequence_privilege(v_role, v_seq, v_priv) then
-        raise exception 'VERIFICACAO_FALHOU: "%" tem permissao de % na sequencia %. Nada foi aplicado.', v_role, v_priv, v_seq;
-      end if;
+  -- sequências dos contadores (tentativas de convite e ordem das compras): ninguém além do dono mexe nelas
+  foreach v_seq in array array[pg_catalog.pg_get_serial_sequence('public.invite_attempts', 'id'),
+                               pg_catalog.pg_get_serial_sequence('public.purchases', 'seq')] loop
+    foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
+      foreach v_priv in array array['usage', 'select', 'update'] loop
+        if pg_catalog.has_sequence_privilege(v_role, v_seq, v_priv) then
+          raise exception 'VERIFICACAO_FALHOU: "%" tem permissao de % na sequencia %. Nada foi aplicado.', v_role, v_priv, v_seq;
+        end if;
+      end loop;
     end loop;
   end loop;
 
@@ -612,6 +684,24 @@ begin
       raise exception 'VERIFICACAO_FALHOU: anon ou service_role pode executar %. Nada foi aplicado.', v_func;
     end if;
   end loop;
+
+  -- conta corrente (carry_over): coluna, regra e índice no lugar. Sem eles o app aceitaria duas contas
+  -- correntes, ou uma entrada que repete virando conta corrente (e deixando de repetir).
+  if not exists (select 1 from pg_catalog.pg_attribute a
+                  where a.attrelid = 'public.budget_items'::regclass and a.attname = 'carry_over'
+                    and a.atttypid = 'pg_catalog.bool'::regtype and a.attnotnull and not a.attisdropped) then
+    raise exception 'VERIFICACAO_FALHOU: a coluna budget_items.carry_over nao esta como combinado. Nada foi aplicado.';
+  end if;
+  if not exists (select 1 from pg_catalog.pg_constraint c
+                  where c.conrelid = 'public.budget_items'::regclass and c.conname = 'items_carry_chk' and c.convalidated) then
+    raise exception 'VERIFICACAO_FALHOU: a regra items_carry_chk nao existe em budget_items. Nada foi aplicado.';
+  end if;
+  if not exists (select 1 from pg_catalog.pg_index i
+                   join pg_catalog.pg_class ic on ic.oid = i.indexrelid
+                  where i.indrelid = 'public.budget_items'::regclass and ic.relname = 'items_one_carry'
+                    and i.indisunique and i.indisvalid) then
+    raise exception 'VERIFICACAO_FALHOU: o indice items_one_carry nao existe em budget_items. Nada foi aplicado.';
+  end if;
 end
 $$;
 

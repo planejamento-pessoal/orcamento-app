@@ -107,15 +107,17 @@ h1, h2, h3, p { margin: 0; }
 
 .tabs {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr);   /* tantas colunas quantas abas */
   padding-bottom: var(--safe-b);
   background: var(--folha-2); border-top: 1px solid var(--regua-forte);
 }
 .tab {
-  position: relative; min-height: 58px; padding: 8px 2px 6px;
+  position: relative; min-height: 58px; padding: 8px 2px 6px; min-width: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   background: none; border: 0; color: var(--tinta-3); font-size: 13px; font-weight: 500;
 }
+.tab span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 340px) { .tab { font-size: 12px; } }
 .tab[aria-current="page"] { color: var(--azul); font-weight: 700; }
 .tab[aria-current="page"]::before { content: ""; position: absolute; top: 0; left: 18%; right: 18%; height: 3px; background: var(--azul); }
 
@@ -194,6 +196,8 @@ h1, h2, h3, p { margin: 0; }
 .linha .meta { display: block; margin-top: 2px; font-size: 14px; font-weight: 400; color: var(--tinta-3); }
 .linha .valor { display: flex; align-items: center; padding: 0 16px 0 8px; font-size: 19px; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .valor.real { color: var(--azul); font-weight: 700; }
+.linha .valor.neg-txt { color: var(--vermelho); }   /* conta corrente no vermelho (mesmo quando é o saldo que você lançou) */
+.ex-veio { margin-bottom: 2px; padding-bottom: 7px; border-bottom: 1px solid var(--regua); }   /* "Veio de outubro": o saldo de abertura do mês, em cima das entradas e saídas */
 .linha.apagada .nome, .linha.apagada .valor { color: var(--tinta-3); }
 
 /* ── pago / recebido: a chavinha ao lado do valor ─────────────────────── */
@@ -384,6 +388,53 @@ section[aria-label="Resultado da simulação"] { scroll-margin-top: 64px; }
 .comp-linha { display: grid; grid-template-columns: 1fr auto auto; gap: 4px 16px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--regua); font-size: 16px; }
 .comp-linha .r { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 .comp-cab { color: var(--tinta-3); font-size: 14px; font-weight: 500; }
+
+/* ── compras (a aba PRIORIDADES da planilha) ───────────────────────────── */
+.compras-resumo { padding: 12px 16px 4px; }
+.compras-resumo .ajuda { margin-top: 2px; }
+.melhor {
+  display: block; width: 100%; margin: 10px 0 6px; padding: 12px 14px; text-align: left;
+  background: var(--ok-fundo); color: var(--tinta);
+  border: 1px solid var(--ok); border-left-width: 5px; border-radius: var(--raio);
+}
+button.melhor:active { filter: brightness(.96); }
+.melhor.nenhuma { background: var(--folha-2); border-color: var(--regua-forte); }
+.melhor .rot { display: block; font-size: 14px; font-weight: 600; letter-spacing: .02em; color: var(--ok); }
+.melhor.nenhuma .rot { color: var(--tinta-2); }
+.melhor .nome { display: block; margin-top: 2px; font-size: 22px; font-weight: 700; line-height: 1.15; }
+.melhor .meta { display: block; margin-top: 3px; font-size: 15px; font-weight: 400; color: var(--tinta-2); }
+
+/* prioridade: o número sempre aparece; a cor só reforça (de vazado, 1, a cheio com aro, 5) */
+.linha.compra .dia { justify-content: center; padding-right: 0; }
+.prio {
+  display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
+  border: 2px solid var(--regua-forte); font-size: 17px; font-weight: 700; line-height: 1;
+  color: var(--tinta-2); background: none; font-variant-numeric: tabular-nums;
+}
+.prio.p1 { color: var(--tinta-3); }
+.prio.p2 { background: var(--folha-2); }
+.prio.p3 { background: var(--azul-fundo); border-color: var(--azul); color: var(--azul); }
+.prio.p4 { background: var(--azul); border-color: var(--azul); color: var(--sobre-azul); }
+.prio.p5 { background: var(--azul); border-color: var(--azul); color: var(--sobre-azul); box-shadow: 0 0 0 2px var(--folha), 0 0 0 4px var(--azul); }
+.livro li.concluida .prio { background: none; border-color: var(--regua-forte); color: var(--tinta-3); box-shadow: none; }
+.livro li.concluida .nome-txt, .livro li.concluida .valor { color: var(--tinta-3); }
+.linha.compra .nome-txt { display: block; }
+
+/* veredito: "cabe?" (na lista, uma linha; no painel, a caixa inteira) */
+.vd { display: flex; align-items: flex-start; gap: 6px; margin-top: 3px; font-size: 14px; font-weight: 600; line-height: 1.25; }
+.vd .icone { margin-top: 1px; }
+.vd.ok { color: var(--ok); }
+.vd.low { color: var(--ambar); }
+.vd.neg { color: var(--vermelho); }
+.vd.info { color: var(--tinta-3); font-weight: 400; }
+.vbox { margin: 0 0 16px; padding: 12px 14px; background: var(--folha-2); border: 1px solid var(--regua-forte); border-radius: var(--raio); }
+.vbox .titulo { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 20px; font-weight: 700; }
+.vbox .titulo.ok { color: var(--ok); }
+.vbox .titulo.low { color: var(--ambar); }
+.vbox .titulo.neg { color: var(--vermelho); }
+.vbox .vd { margin-top: 7px; font-size: 16px; font-weight: 500; }
+.vbox .vd.info { color: var(--tinta-2); }
+.vbox .acoes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 
 /* ── acesso, conta ─────────────────────────────────────────────────────── */
 .bloco { padding: 4px 16px 8px; }

@@ -1,7 +1,18 @@
 /* ════════════════════════════════════════════════════════════════════════
-   sim-view.js — a aba "Simular": "e se eu comprar isso?" / "e se entrar
-   mais essa renda?". Nada é gravado no banco: o cenário fica só neste
-   aparelho até você decidir lançar de verdade.
+   sim-view.js — as abas "Simular" e "Compras".
+
+   Simular: "e se eu comprar isso?" / "e se entrar mais essa renda?". Nada é
+   gravado no banco: o cenário fica só neste aparelho até você decidir lançar
+   de verdade.
+
+   Compras (a aba PRIORIDADES da planilha): o que você quer comprar, em que
+   ordem, e se cabe no orçamento (à vista ou parcelado). Cada compra pode ser
+   mandada para o Simular.
+
+   As duas moram no MESMO arquivo de propósito. O index.html lista os arquivos do
+   app, e o APK já instalado leva uma cópia dessa lista: se ela crescesse, o APK
+   antigo não abriria, sem internet, a cópia guardada da versão nova (veja
+   tests/launcher.test.js). Código novo entra em arquivo que já está na lista.
    ════════════════════════════════════════════════════════════════════════ */
 (function (App) {
   'use strict';
@@ -13,6 +24,15 @@
 
   function loadSims() { var s = D.store.get(simsKey(), []); return Array.isArray(s) ? s : []; }
   function saveSims(list) { D.store.set(simsKey(), list); }
+
+  // A aba Compras manda uma compra para cá ("Ver no Simular"). spec: formato de Engine.purchaseSpec +
+  // { id, purchaseId }. Mandar a mesma compra, do mesmo jeito, outra vez troca a anterior (não duplica).
+  function addSim(spec) {
+    var list = loadSims().filter(function (x) { return x.id !== spec.id; });
+    list.push(spec);
+    saveSims(list);
+    form.tipo = 'compra';
+  }
   function startOf() { return form.start || F.currentMonth(); }
 
   function describe(sp) {
@@ -187,16 +207,354 @@
         h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Mês' }), h('th', { scope: 'col', text: 'Sem (R$)' }), h('th', { scope: 'col', text: 'Com (R$)' }))), tb)));
 
     function launch(sp) {
-      d.confirmBox({ title: 'Lançar "' + sp.name + '"?', text: 'Vai criar o item de verdade no orçamento (' + describe(sp) + '), visível para todos. A simulação sai do cenário.', ok: 'Lançar' }).then(function (yes) {
+      // Se a simulação veio da aba Compras, lançar também fecha a compra (senão ela contaria duas vezes: já
+      // está no orçamento e ainda aparece como "a comprar").
+      var daCompra = sp.purchaseId && (App.state.data.purchases || []).some(function (p) { return p.id === sp.purchaseId && p.status !== 'concluido'; });
+      d.confirmBox({
+        title: 'Lançar "' + sp.name + '"?',
+        text: 'Vai criar o item de verdade no orçamento (' + describe(sp) + '), visível para todos. A simulação sai do cenário.' + (daCompra ? ' A compra também fica como concluída na aba Compras.' : ''),
+        ok: 'Lançar'
+      }).then(function (yes) {
         if (!yes) return;
         App.sheets.createFromSpec({ kind: sp.kind, name: sp.name, start: sp.start, n: sp.n, perCents: sp.perCents, firstCents: sp.firstCents }).then(function (r) {
           if (!r.ok) return d.toast(r.error, 'erro');
           sims = sims.filter(function (x) { return x.id !== sp.id; }); saveSims(sims);
-          App.reload(true).then(function () { d.toast('Lançado no orçamento'); App.go('mes', { month: sp.start }); });
+          var fecha = daCompra ? D.updatePurchase(sp.purchaseId, { status: 'concluido' }) : Promise.resolve({ ok: true });
+          fecha.then(function (rc) {
+            App.reload(true).then(function () {
+              d.toast(rc.ok ? 'Lançado no orçamento' : 'Lançado no orçamento. Não consegui marcar a compra como concluída: marque na aba Compras.', rc.ok ? null : 'erro');
+              App.go('mes', { month: sp.start });
+            });
+          });
         });
       });
     }
   }
 
   App.views.sim = { render: render };
+  App.sim = { add: addSim };
+})(window.App = window.App || {});
+
+/* ── Compras ───────────────────────────────────────────────────────────── */
+(function (App) {
+  'use strict';
+  var d = App.dom, F = App.fmt, E = window.Engine, D = App.data, h = d.h;
+  var filter = 'pendentes';
+  var FILTERS = [{ v: 'pendentes', t: 'Pendentes' }, { v: 'concluidas', t: 'Concluídas' }, { v: 'todas', t: 'Todas' }];
+  var STATUS = [{ v: 'nada', t: 'Nada' }, { v: 'planejado', t: 'Planejado' }, { v: 'orcando', t: 'Orçando' }, { v: 'concluido', t: 'Concluído' }];
+  var STATUS_TXT = { nada: 'Nada', planejado: 'Planejado', orcando: 'Orçando', concluido: 'Concluído' };
+
+  function monthOf(dbDate) { return dbDate ? String(dbDate).slice(0, 7) : null; }
+  function purchases() { var p = App.state.data && App.state.data.purchases; return Array.isArray(p) ? p : []; }
+  function findPurchase(id) { return purchases().filter(function (p) { return p.id === id; })[0]; }
+  function evaluate(list) {
+    var data = App.state.data;
+    return E.evaluatePurchases(data, data.settings, list, { today: F.currentMonth() });
+  }
+  function cap(t) { t = String(t || ''); return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase(); }
+
+  // ── textos do veredito ─────────────────────────────────────────────────
+  // tom: 'ok' (cabe) | 'low' (não cabe, mas o saldo não fica negativo) | 'neg' (o saldo ficaria negativo) | 'info'
+  function toneOf(r) {
+    if (r.state !== 'ok') return 'info';
+    if (r.how === 'avista' || r.how === 'parcelado') return 'ok';
+    return r.cash.after < 0 ? 'neg' : 'low';
+  }
+  function shortVerdict(r) {
+    if (r.state === 'concluida') return 'Concluída';
+    if (r.state === 'sem-valor') return 'Falta o valor para avaliar';
+    if (r.state === 'sem-saldo') return 'O saldo acumulado ainda não começou';
+    if (r.how === 'avista') return 'Cabe à vista';
+    if (r.how === 'parcelado') return 'Cabe parcelado: ' + r.inst.n + 'x de ' + F.money(r.inst.per);
+    return 'Não cabe agora' + (r.wait ? '. À vista a partir de ' + F.monthShort(r.wait.month) : '');
+  }
+  function headline(r) {
+    if (r.how === 'avista') return 'Cabe à vista';
+    if (r.how === 'parcelado') return 'Não cabe à vista, mas cabe parcelado';
+    return 'Não cabe agora';
+  }
+  // Linhas de detalhe (cada uma com seu tom). ev = resultado de evaluatePurchases.
+  function detailLines(r, ev) {
+    var settings = App.state.data.settings, minC = ev.minCents, out = [];
+    if (r.state === 'concluida') return [{ tone: 'info', text: 'Compra concluída: já foi feita. Ela não entra na disputa de melhor compra.' }];
+    if (r.state === 'sem-valor') return [{ tone: 'info', text: 'Digite o valor estimado para ver se a compra cabe no orçamento.' }];
+    if (r.state === 'sem-saldo') return [{ tone: 'info', text: 'O saldo acumulado só começa em ' + F.monthShort(settings.balance_start_month) + ', então ainda não dá para avaliar.' }];
+    var c = r.cash;
+    out.push(c.fits
+      ? { tone: 'ok', text: 'À vista cabe: o menor saldo ficaria em ' + F.money(c.after) + ' (' + F.monthShort(c.afterMonth) + ').' }
+      : { tone: c.after < 0 ? 'neg' : 'low', text: 'À vista não cabe: faltam ' + F.money(c.missing) + ' para manter o mínimo de ' + F.money(minC) + '.' });
+    if (r.inst) {
+      var i = r.inst, rot = 'Em ' + i.n + 'x de ' + F.money(i.per);
+      out.push(i.fits
+        ? { tone: 'ok', text: rot + ' cabe: o menor saldo ficaria em ' + F.money(i.min) + ' (' + F.monthShort(i.minMonth) + ').' }
+        : { tone: i.min < 0 ? 'neg' : 'low', text: rot + ' não cabe: o saldo cairia para ' + F.money(i.min) + ' (' + F.monthShort(i.minMonth) + '), abaixo do mínimo de ' + F.money(minC) + '.' });
+      if (!i.totalGiven) out.push({ tone: 'info', text: 'Sem "total parcelado": usei o valor da compra (sem juros).' });
+    } else if (r.how === 'aguardar') {
+      out.push({ tone: 'info', text: 'Para ver se cabe parcelado, informe o número de parcelas em "Mais opções".' });
+    }
+    if (r.how === 'aguardar') {
+      out.push({ tone: 'info', text: r.wait ? 'À vista passa a caber a partir de ' + F.monthShort(r.wait.month) + '.' : 'À vista não passa a caber nos próximos 3 anos.' });
+    }
+    if (r.late) out.push({ tone: 'info', text: 'O mês previsto (' + F.monthShort(r.execMonth) + ') já passou: avaliei a partir de ' + F.monthShort(r.from) + '.' });
+    out.push({ tone: 'info', text: 'Olhei os ' + ev.horizon + ' meses a partir de ' + F.monthShort(r.from) + '.' });
+    return out;
+  }
+  function vd(tone, text) {
+    return h('div', { 'class': 'vd ' + tone }, tone === 'info' ? null : d.statusIcon(tone), h('span', { text: text }));
+  }
+
+  // ── cartão do veredito (no painel de cada compra) ──────────────────────
+  // canSim: mostra os botões "Ver no Simular" (só para compra já salva)
+  function verdictBox(r, ev, canSim, onSim) {
+    var box = h('div', { 'class': 'vbox', role: 'group', 'aria-label': 'Cabe no orçamento?' });
+    if (r.state === 'ok') box.appendChild(h('div', { 'class': 'titulo ' + toneOf(r) }, d.statusIcon(toneOf(r)), h('span', { text: headline(r) })));
+    detailLines(r, ev).forEach(function (l) { box.appendChild(vd(l.tone, l.text)); });
+    if (canSim && r.state === 'ok') {
+      var acoes = h('div', { 'class': 'acoes' }, h('button', { 'class': 'btn p', type: 'button', text: 'Ver à vista no Simular', on: { click: function () { onSim('avista'); } } }));
+      if (r.inst) acoes.appendChild(h('button', { 'class': 'btn p', type: 'button', text: 'Ver em ' + r.inst.n + 'x no Simular', on: { click: function () { onSim('parcelado'); } } }));
+      box.appendChild(acoes);
+    }
+    return box;
+  }
+  // Manda a compra para a aba Simular (cenário só deste aparelho; nada é gravado no orçamento)
+  function sendToSim(r, how) {
+    var sp = E.purchaseSpec(r, how);
+    sp.id = 'compra:' + r.purchase.id + ':' + how;
+    sp.purchaseId = r.purchase.id;
+    App.sim.add(sp);
+    d.closeAllSheets();
+    App.go('sim');
+  }
+
+  // ── a lista ────────────────────────────────────────────────────────────
+  function metaOf(r) {
+    var p = r.purchase, parts = [];
+    if (p.category) parts.push(cap(p.category));
+    parts.push(r.execMonth ? F.monthShort(r.execMonth) + (r.late && p.status !== 'concluido' ? ' (já passou)' : '') : 'sem mês definido');
+    if (p.status && p.status !== 'nada') parts.push(STATUS_TXT[p.status]);
+    return parts.join(' · ');
+  }
+  function row(r, ev) {
+    var p = r.purchase, tone = toneOf(r), final = p.final_amount != null && E.cents(p.final_amount) > 0;
+    var verdict = h('span', { 'class': 'vd ' + tone }, tone === 'info' ? (r.state === 'concluida' ? d.icon('check', 'p') : null) : d.statusIcon(tone), h('span', { text: shortVerdict(r) }));
+    var btn = h('button', { 'class': 'linha compra', type: 'button', on: { click: function () { openPurchase(p.id); } } },
+      h('span', { 'class': 'dia' }, h('span', { 'class': 'prio p' + p.priority }, h('span', { 'class': 'sr', text: 'Prioridade ' }), String(p.priority))),
+      h('span', { 'class': 'nome' }, h('span', { 'class': 'nome-txt', text: p.name }), h('span', { 'class': 'meta', text: metaOf(r) }), verdict),
+      h('span', { 'class': 'valor' + (final ? ' real' : '') }, r.valor > 0 ? [h('span', { 'class': 'sr', text: 'R$ ' }), F.money(r.valor, { bare: true }), final ? h('span', { 'class': 'sr', text: ', valor final' }) : null] : '—'));
+    return h('li', { 'class': r.state === 'concluida' ? 'concluida' : null }, btn);
+  }
+
+  function summary(ev, hasPending) {
+    var st = App.state, settings = st.data.settings, box = h('section', { 'class': 'compras-resumo', 'aria-label': 'Resumo das compras' });
+    box.appendChild(h('div', { 'class': 'ex-linha' }, h('span', { text: 'Saldo no fim de ' + F.monthShort(ev.today) }),
+      h('span', { 'class': 'v' + (ev.saldoToday != null && ev.saldoToday < 0 ? ' neg-txt' : ''), text: ev.saldoToday == null ? '—' : F.money(ev.saldoToday) })));
+    box.appendChild(h('div', { 'class': 'ex-linha' }, h('span', { text: 'Saldo mínimo para manter' }), h('span', { 'class': 'v', text: F.money(ev.minCents) })));
+    if (ev.saldoToday == null) box.appendChild(h('p', { 'class': 'ajuda', text: 'O saldo acumulado começa em ' + F.monthShort(settings.balance_start_month) + '.' }));
+    if (!hasPending) return box;
+    var b = ev.best;
+    if (b) {
+      box.appendChild(h('button', { 'class': 'melhor', type: 'button', on: { click: function () { openPurchase(b.purchase.id); } } },
+        h('span', { 'class': 'rot', text: 'Melhor compra agora' }),
+        h('span', { 'class': 'nome', text: b.purchase.name }),
+        h('span', { 'class': 'meta', text: 'À vista, ' + F.money(b.valor) + ', ' + F.monthShort(b.from) + '. Prioridade ' + b.purchase.priority + '.' })));
+    } else if (ev.bestInstallment) {
+      var bi = ev.bestInstallment;
+      box.appendChild(h('button', { 'class': 'melhor nenhuma', type: 'button', on: { click: function () { openPurchase(bi.purchase.id); } } },
+        h('span', { 'class': 'rot', text: 'Nenhuma compra cabe à vista agora' }),
+        h('span', { 'class': 'nome', text: bi.purchase.name }),
+        h('span', { 'class': 'meta', text: 'Parcelada cabe: ' + bi.inst.n + 'x de ' + F.money(bi.inst.per) + ', a partir de ' + F.monthShort(bi.from) + '. Prioridade ' + bi.purchase.priority + '.' })));
+    } else {
+      box.appendChild(h('div', { 'class': 'melhor nenhuma' }, h('span', { 'class': 'rot', text: 'Nenhuma compra pendente cabe agora' }),
+        h('span', { 'class': 'meta', text: 'Toque numa compra para ver quando passa a caber.' })));
+    }
+    return box;
+  }
+
+  function render(main) {
+    var st = App.state, data = st.data;
+    if (data.purchasesOk === false) {
+      main.appendChild(h('div', { 'class': 'aviso info' }, h('b', { text: 'A aba Compras ainda não está ligada. ' }),
+        App.can() ? 'No Supabase, rode o arquivo 01_schema.sql de novo (é seguro: não apaga nada) e toque em atualizar.'
+                  : 'Peça a quem administra o app para ligá-la.'));
+      return;
+    }
+    if (!Array.isArray(data.purchases)) {   // cópia antiga deste aparelho, de antes da aba existir
+      main.appendChild(h('p', { 'class': 'vazio', text: 'Ainda não carreguei as compras. Ligue a internet e toque em atualizar (as setas lá em cima).' }));
+      return;
+    }
+    var ev = evaluate(data.purchases);
+    var pend = ev.items.filter(function (r) { return r.state !== 'concluida'; });
+    var feitas = ev.items.length - pend.length;
+    main.appendChild(summary(ev, pend.length > 0));
+
+    var chips = h('div', { 'class': 'chips', role: 'group', 'aria-label': 'Filtro' });
+    FILTERS.forEach(function (f) {
+      var n = f.v === 'pendentes' ? pend.length : f.v === 'concluidas' ? feitas : ev.items.length;
+      chips.appendChild(h('button', { 'class': 'chip', type: 'button', 'aria-pressed': f.v === filter ? 'true' : 'false', text: f.t + ' (' + n + ')', on: { click: function () { filter = f.v; App.render(true); } } }));
+    });
+    main.appendChild(chips);
+    main.appendChild(h('p', { 'class': 'ajuda', style: 'padding:0 16px 6px', text: 'Cada compra é conferida sozinha contra o orçamento, olhando os ' + ev.horizon + ' meses a partir do mês previsto. Prioridade 5 é a mais urgente.' }));
+
+    var shown = ev.items.filter(function (r) { return filter === 'todas' || (filter === 'concluidas') === (r.state === 'concluida'); });
+    var ul = h('ul', { 'class': 'livro' });
+    shown.forEach(function (r) { ul.appendChild(row(r, ev)); });
+    if (shown.length) main.appendChild(ul);
+    else if (filter === 'concluidas') main.appendChild(h('p', { 'class': 'vazio', text: 'Nenhuma compra concluída.' }));
+    else if (!ev.items.length) main.appendChild(h('p', { 'class': 'vazio' }, 'Nenhuma compra na lista. Cadastre o que você quer comprar e o app diz se cabe no orçamento, à vista ou parcelado. ',
+      App.can() ? h('b', { text: 'Toque em Nova compra.' }) : null));
+    else main.appendChild(h('p', { 'class': 'vazio', text: 'Nada pendente. Toque em "Concluídas" ou "Todas" para ver o resto.' }));
+
+    if (App.can()) App.setFab({ label: 'Nova compra', icon: 'plus', on: function () { openPurchase(null); } });
+  }
+
+  // ── painel de uma compra ───────────────────────────────────────────────
+  function showError(box, msg) { box.textContent = msg; box.hidden = !msg; if (msg && box.scrollIntoView) box.scrollIntoView({ block: 'nearest' }); }
+  function done(rec, msg) { return App.reload(true).then(function () { rec.close(); d.toast(msg); }); }
+
+  function openReadOnly(p) {
+    var ev = evaluate([p]), r = ev.items[0];
+    var rows = [['Valor estimado', F.money(E.cents(p.est_amount || 0))]];
+    if (p.final_amount != null && E.cents(p.final_amount) > 0) rows.push(['Valor final', F.money(E.cents(p.final_amount))]);
+    rows.push(['Mês previsto', p.exec_month ? F.monthShort(p.exec_month) : 'sem mês definido']);
+    rows.push(['Situação', STATUS_TXT[p.status] || '—']);
+    if (p.inst_count) rows.push(['Parcelas', p.inst_count + (p.inst_total != null && E.cents(p.inst_total) > 0 ? ' (total ' + F.money(E.cents(p.inst_total)) + ')' : '')]);
+    if (p.category) rows.push(['Tipo', cap(p.category)]);
+    if (p.supplier) rows.push(['Fornecedor', p.supplier]);
+    if (p.model) rows.push(['Modelo', p.model]);
+    var dl = h('dl', { 'class': 'leitura' });
+    rows.forEach(function (x) { dl.appendChild(h('dt', { text: x[0] })); dl.appendChild(h('dd', { 'class': 'num', text: x[1] })); });
+    var rec = d.openSheet({
+      title: p.name, sub: 'Prioridade ' + p.priority, focus: 'none',
+      body: h('div', null, h('div', { 'class': 'aviso info' }, d.icon('eye', 'p'), ' Sua conta é somente leitura.'),
+        verdictBox(r, ev, true, function (how) { sendToSim(r, how); }), dl),
+      footer: [h('button', { 'class': 'btn', type: 'button', text: 'Fechar', on: { click: function () { rec.close(); } } })]
+    });
+  }
+
+  function openPurchase(id) {
+    var cur = id ? findPurchase(id) : null;
+    if (id && !cur) return;
+    if (!App.can()) { if (cur) openReadOnly(cur); return; }
+    var p0 = cur || { name: '', priority: 3, status: 'nada', est_amount: 0, final_amount: null, exec_month: F.currentMonth() + '-01', inst_total: null, inst_count: null, category: null, supplier: null, model: null };
+
+    var name = h('input', { 'class': 'entrada', type: 'text', maxlength: 80, autocomplete: 'off', placeholder: 'Ex.: Fogão, Guarda-roupa', value: p0.name || '' });
+    var prio = d.segmented([1, 2, 3, 4, 5].map(function (n) { return { v: String(n), t: String(n) }; }), String(p0.priority), function () { refresh(); }, 'Prioridade');
+    var status = d.segmented(STATUS, p0.status, function () { refresh(); }, 'Situação');
+    var est = d.moneyInput(E.cents(p0.est_amount || 0), { 'aria-label': 'Valor estimado' });
+    var fin = d.moneyInput(p0.final_amount != null ? E.cents(p0.final_amount) : 0, { 'aria-label': 'Valor final' });
+    var tot = d.moneyInput(p0.inst_total != null ? E.cents(p0.inst_total) : 0, { 'aria-label': 'Total parcelado' });
+    var nParc = h('input', { 'class': 'entrada', type: 'number', inputmode: 'numeric', min: 2, max: 120, placeholder: 'Sem parcelas', 'aria-label': 'Número de parcelas', value: p0.inst_count ? String(p0.inst_count) : '' });
+    var cat = h('input', { 'class': 'entrada', type: 'text', maxlength: 40, autocomplete: 'off', placeholder: 'Ex.: Eletro, Móvel, Reforma', value: p0.category || '' });
+    var sup = h('input', { 'class': 'entrada', type: 'text', maxlength: 80, autocomplete: 'off', placeholder: 'Loja, site ou pessoa', value: p0.supplier || '' });
+    var mod = h('input', { 'class': 'entrada', type: 'text', maxlength: 80, autocomplete: 'off', placeholder: 'Modelo (opcional)', value: p0.model || '' });
+    var execM = App.sheets.monthField('Mês previsto', monthOf(p0.exec_month), {
+      allowEmpty: true, placeholder: 'Sem mês definido', emptyLabel: 'Sem mês', fallback: F.currentMonth(), onChange: function () { refresh(); },
+      help: 'Em que mês você pretende comprar. Se o mês já passou, o app avalia a partir de hoje.'
+    });
+    var err = h('p', { 'class': 'erro-txt', role: 'alert', hidden: true });
+    var vhost = h('div');
+
+    // Lê o formulário. Devolve { row } com os campos em reais/texto (prontos para o banco) ou { error }.
+    function read() {
+      var nm = name.value.trim();
+      if (!nm) return { error: 'Dê um nome à compra.' };
+      var e = F.parseMoney(est.value.trim() === '' ? '0' : est.value);
+      if (isNaN(e)) return { error: 'Digite o valor estimado assim: 1.234,56' };
+      var f = fin.value.trim() === '' ? 0 : F.parseMoney(fin.value);
+      if (isNaN(f)) return { error: 'Digite o valor final assim: 1.234,56' };
+      var t = tot.value.trim() === '' ? 0 : F.parseMoney(tot.value);
+      if (isNaN(t)) return { error: 'Digite o total parcelado assim: 1.234,56' };
+      if (e < 0 || f < 0 || t < 0) return { error: 'Os valores não podem ser negativos.' };
+      var nTxt = String(nParc.value).trim(), n = null;
+      if (nTxt !== '') {
+        n = /^\d{1,3}$/.test(nTxt) ? parseInt(nTxt, 10) : NaN;
+        if (!(n >= 2 && n <= 120)) return { error: 'O número de parcelas vai de 2 a 120. Para pagar de uma vez, deixe vazio.' };
+      }
+      if (t > 0 && n == null) return { error: 'Você digitou o total parcelado: digite também o número de parcelas.' };
+      return { row: {
+        name: nm, priority: parseInt(prio.get(), 10), status: status.get(),
+        category: cat.value.trim() || null, supplier: sup.value.trim() || null, model: mod.value.trim() || null,
+        est_amount: e / 100, final_amount: f > 0 ? f / 100 : null,
+        exec_month: execM.get() ? E.toDbDate(execM.get()) : null,
+        inst_total: n != null && t > 0 ? t / 100 : null, inst_count: n
+      } };
+    }
+
+    // O veredito acompanha o que você digita (sem gravar nada)
+    function refresh() {
+      var x = read(), tmp;
+      if (x.row) tmp = x.row;
+      else {   // formulário incompleto: avalia com o que dá (valor 0 = "digite o valor")
+        tmp = { name: name.value.trim() || '—', priority: parseInt(prio.get(), 10), status: status.get(), est_amount: 0, final_amount: null, exec_month: execM.get() ? E.toDbDate(execM.get()) : null, inst_total: null, inst_count: null };
+        var e2 = F.parseMoney(est.value.trim() === '' ? '0' : est.value), f2 = fin.value.trim() === '' ? 0 : F.parseMoney(fin.value);
+        if (!isNaN(e2) && e2 > 0) tmp.est_amount = e2 / 100;
+        if (!isNaN(f2) && f2 > 0) tmp.final_amount = f2 / 100;
+      }
+      if (cur) tmp.id = cur.id;
+      var ev = evaluate([tmp]), r = ev.items[0];
+      d.clear(vhost);
+      vhost.appendChild(verdictBox(r, ev, !!cur && tmp.status !== 'concluido', function (how) { sendToSim(r, how); }));
+    }
+    [name, est, fin, tot, nParc, cat, sup, mod].forEach(function (el) { el.addEventListener('input', refresh); });
+
+    var saving = false;
+    var save = h('button', { 'class': 'btn primario', type: 'button', text: cur ? 'Salvar' : 'Adicionar', on: { click: onSave } });
+    var cancel = h('button', { 'class': 'btn', type: 'button', text: 'Cancelar', on: { click: function () { rec.close(); } } });
+
+    function sameAsSaved(row) {
+      if (!cur) return false;
+      return row.name === cur.name && row.priority === Number(cur.priority) && row.status === cur.status &&
+        (row.category || null) === (cur.category || null) && (row.supplier || null) === (cur.supplier || null) && (row.model || null) === (cur.model || null) &&
+        E.cents(row.est_amount) === E.cents(cur.est_amount || 0) &&
+        (row.final_amount == null ? null : E.cents(row.final_amount)) === (cur.final_amount == null ? null : E.cents(cur.final_amount)) &&
+        (row.exec_month || null) === (cur.exec_month ? String(cur.exec_month).slice(0, 10) : null) &&
+        (row.inst_total == null ? null : E.cents(row.inst_total)) === (cur.inst_total == null ? null : E.cents(cur.inst_total)) &&
+        (row.inst_count || null) === (cur.inst_count ? Number(cur.inst_count) : null);
+    }
+    function onSave() {
+      if (saving) return;
+      showError(err, '');
+      var x = read();
+      if (x.error) return showError(err, x.error);
+      if (!(x.row.est_amount > 0) && !(x.row.final_amount > 0)) return showError(err, 'Digite o valor estimado da compra.');
+      if (sameAsSaved(x.row)) { rec.close(); return; }
+      saving = true; save.disabled = true;
+      (cur ? D.updatePurchase(cur.id, x.row) : D.createPurchase(x.row)).then(function (r) {
+        if (!r.ok) { saving = false; save.disabled = false; return showError(err, r.error); }
+        done(rec, cur ? 'Salvo' : 'Compra adicionada');
+      });
+    }
+    function onDelete() {
+      d.confirmBox({ title: 'Apagar "' + cur.name + '"?', text: 'A compra sai da lista. O que já foi lançado no orçamento não muda. Não dá para desfazer.', ok: 'Apagar', danger: true }).then(function (yes) {
+        if (!yes) return;
+        D.deletePurchase(cur.id).then(function (r) {
+          if (!r.ok) return showError(err, r.error);
+          done(rec, 'Compra apagada');
+        });
+      });
+    }
+
+    var temOpcional = !!(p0.final_amount != null && E.cents(p0.final_amount) > 0) || !!p0.inst_count || !!p0.category || !!p0.supplier || !!p0.model;
+    var opcoes = h('details', { style: 'margin:4px 0 12px', open: temOpcional },
+      h('summary', { text: 'Mais opções', style: 'min-height:44px;display:flex;align-items:center;font-weight:600;color:var(--azul);cursor:pointer' }),
+      h('div', { style: 'padding-top:10px' },
+        d.field('Valor final (quando fechar a compra)', fin, 'Se preencher, vale no lugar do estimado.'),
+        h('div', { 'class': 'duas' }, d.field('Total parcelado', tot, 'Com juros, se tiver. Vazio = o valor da compra.'), d.field('Nº de parcelas', nParc, 'De 2 a 120.')),
+        d.field('Tipo', cat), d.field('Fornecedor', sup), d.field('Modelo', mod),
+        cur ? h('button', { 'class': 'btn perigo cheio', type: 'button', text: 'Apagar compra', on: { click: onDelete } }) : null));
+
+    var body = h('div', null,
+      vhost,
+      d.field('Nome', name),
+      h('div', { 'class': 'campo' }, h('span', { 'class': 'rot', text: 'Prioridade' }), prio.el, h('div', { 'class': 'ajuda', text: '1 = menos urgente, 5 = mais urgente.' })),
+      d.field('Valor estimado', est),
+      execM.el,
+      h('div', { 'class': 'campo' }, h('span', { 'class': 'rot', text: 'Situação' }), status.el),
+      err, opcoes);
+    var rec = d.openSheet({ title: cur ? cur.name : 'Nova compra', sub: cur ? 'Prioridade ' + cur.priority : null, body: body, footer: [cancel, save], focus: 'none' });
+    refresh();
+    if (!cur) setTimeout(function () { try { name.focus(); } catch (e) {} }, 60);
+  }
+
+  App.views.compras = { render: render };
 })(window.App = window.App || {});

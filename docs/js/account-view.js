@@ -198,7 +198,7 @@
       });
     } } });
     var rec = d.openSheet({
-      title: 'Novo convite', body: h('div', null, h('div', { 'class': 'campo' }, h('span', { 'class': 'rot', text: 'Que acesso a pessoa vai ter?' }), papel.el, ajuda), d.field('Validade', dias), d.field('Lembrete (opcional)', nota), err),
+      title: 'Novo convite', body: h('div', null, h('div', { 'class': 'campo' }, h('span', { 'class': 'rot', text: 'Que acesso a pessoa vai ter?' }), papel.el, ajuda), d.field('O código vale por', dias, 'Prazo para a pessoa usar o código. Depois que ela entra, o acesso dela não vence.'), d.field('Lembrete (opcional)', nota), err),
       footer: [h('button', { 'class': 'btn', type: 'button', text: 'Cancelar', on: { click: function () { rec.close(); } } }), go], focus: 'none'
     });
   }

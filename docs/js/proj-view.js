@@ -37,7 +37,8 @@
     main.appendChild(resumo);
 
     // itens que não repetem ficam zerados nos meses sem lançamento: a linha pode estar otimista
-    var fora = st.data.items.filter(function (i) { return i.active !== false && !i.recurring; });
+    // (a conta corrente, que puxa a sobra do mês anterior, não entra: ela não depende de lançamento)
+    var fora = st.data.items.filter(function (i) { return i.active !== false && !i.recurring && !E.isCarry(idx, i); });
     if (fora.length) {
       var lastEntry = {};
       st.data.entries.forEach(function (e) { var m = e.month.slice(0, 7); if (!lastEntry[e.item_id] || m > lastEntry[e.item_id]) lastEntry[e.item_id] = m; });

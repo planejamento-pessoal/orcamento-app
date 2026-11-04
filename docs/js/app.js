@@ -6,7 +6,7 @@
 (function (App) {
   'use strict';
   var d = App.dom, F = App.fmt, E = window.Engine, D = App.data, h = d.h;
-  App.version = '1.2.0';
+  App.version = '1.3.0';
   App.views = App.views || {};
 
   var state = App.state = {
@@ -18,6 +18,7 @@
     { id: 'mes', label: 'Mês', icon: 'calendar' },
     { id: 'proj', label: 'Projeção', icon: 'chart' },
     { id: 'sim', label: 'Simular', icon: 'calc' },
+    { id: 'compras', label: 'Compras', icon: 'bag' },
     { id: 'itens', label: 'Itens', icon: 'list' },
     { id: 'conta', label: 'Conta', icon: 'user' }
   ];

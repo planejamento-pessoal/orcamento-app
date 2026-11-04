@@ -35,6 +35,7 @@ const TEXT = [ // [texto, fundo]
   ['ok', 'folha'], ['ok', 'folha-2'], ['ok', 'ok-fundo'],
   ['sobre-azul', 'azul'], ['sobre-vermelho', 'vermelho'], ['folha', 'tinta'],
   ['sobre-ok', 'ok'], ['ok', 'sobre-ok'], // chavinha ligada: bolinha sobre o trilho e o "visto" dentro da bolinha
+  ['tinta', 'ok-fundo'], ['tinta-2', 'ok-fundo'], // aba Compras: cartão "melhor compra" (nome e detalhe)
 ];
 const GRAFICO = [ // marcas e bordas de campo: mínimo 3:1
   ['azul', 'folha'], ['azul', 'folha-2'], ['serie', 'folha'], ['serie', 'folha-2'], ['regua-forte', 'folha'], ['regua-forte', 'folha-2'], ['ambar', 'folha'], ['tinta-3', 'folha'],

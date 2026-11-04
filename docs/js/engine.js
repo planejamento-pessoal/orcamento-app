@@ -27,8 +27,18 @@
   function cents(x) { return Math.round(Number(x) * 100); }
 
   // ── índice dos dados ───────────────────────────────────────────────────
-  // data = { items, rates, entries, settled? } (formato das tabelas do Supabase).
+  // data = { items, rates, entries, settled?, settings? } (formato das tabelas do Supabase).
   // settled = marcas "pago/recebido" ({ item_id, month }); é só status: nenhuma conta usa.
+  // settings ({ balance_start_month, opening_balance }) só é preciso para a "conta corrente" (abaixo).
+  //
+  // CONTA CORRENTE ("carry_over"): um item de entrada que não repete (o que guarda o dinheiro da conta) puxa, todo mês depois
+  // do mês inicial do saldo, o que sobrou do mês anterior = o saldo acumulado no fim dele.
+  // O saldo acumulado JÁ carrega essa sobra de um mês para o outro; por isso a sobra mostrada na linha
+  // do item NÃO entra nas entradas nem no resultado do mês (entraria duas vezes). Ela só aparece:
+  //   • no mês (monthView.carry) e no valor do item (amountAt, source 'auto');
+  //   • como correção: um valor lançado para o item num desses meses vale como o saldo REAL da conta
+  //     no começo do mês, e os meses seguintes partem dele (source 'real').
+  // No mês inicial e antes dele o item é um item comum (o valor dele é o dinheiro que já estava na conta).
   function buildIndex(data) {
     var entries = new Map(), ratesBy = new Map(), settled = new Set(), i;
     var es = data.entries || [], rs = data.rates || [], ss = data.settled || [];
@@ -40,7 +50,66 @@
     }
     ratesBy.forEach(function (l) { l.sort(function (a, b) { return a.from - b.from; }); });
     for (i = 0; i < ss.length; i++) settled.add(ss[i].item_id + '|' + mi(ss[i].month));
-    return { items: data.items || [], entries: entries, ratesBy: ratesBy, settled: settled, cache: new Map() };
+    var items = data.items || [], st = data.settings, carry = null;
+    for (i = 0; i < items.length && !carry; i++) if (isCarryItem(items[i])) carry = items[i];
+    return {
+      items: items, entries: entries, ratesBy: ratesBy, settled: settled, cache: new Map(),
+      carry: carry,
+      start: st && st.balance_start_month ? mi(st.balance_start_month) : null,
+      opening: st ? cents(st.opening_balance || 0) : 0,
+      bal: new Map(), variants: new Map()
+    };
+  }
+
+  // Item que puxa a sobra do mês anterior: entrada que não repete e ligada (simulação nunca).
+  // "Ativo" não entra aqui de propósito: para um item que não repete ele só serve para sugerir o item nos meses
+  // sem valor, e a conta corrente nunca é sugerida. Se "parado" desligasse a conta corrente, o saldo real
+  // lançado voltaria a somar como entrada e a sobra do mês anterior entraria duas vezes no saldo.
+  function isCarryItem(it) {
+    return !!it && it.carry_over === true && it.kind === 'entrada' && !it.recurring && !it.sim;
+  }
+  // Este item é a conta corrente deste índice?
+  function isCarry(idx, item) { return !!idx.carry && !!item && item.id === idx.carry.id; }
+  // A conta corrente puxa a sobra neste mês? (só depois do mês inicial do saldo)
+  function carryActive(idx, m) { return idx.carry !== null && idx.start !== null && m > idx.start; }
+  // Valor lançado para a conta corrente neste mês (centavos) = saldo real digitado; null se não há
+  function overrideAt(idx, m) {
+    if (!carryActive(idx, m)) return null;
+    var k = idx.carry.id + '|' + m;
+    return idx.entries.has(k) ? idx.entries.get(k) : null;
+  }
+
+  // O mesmo índice, para outras configurações (mês inicial e saldo de abertura). Só muda de verdade se
+  // alguém pedir uma linha do tempo com configurações diferentes das que montaram o índice (testes).
+  function withSettings(idx, settings) {
+    if (!settings || !settings.balance_start_month) return idx;
+    var start = mi(settings.balance_start_month), opening = cents(settings.opening_balance || 0);
+    if (idx.start === start && idx.opening === opening) return idx;
+    var key = start + '|' + opening, v = idx.variants.get(key);
+    if (!v) {
+      v = Object.assign({}, idx, { start: start, opening: opening, cache: new Map(), bal: new Map(), variants: new Map() });
+      idx.variants.set(key, v);
+    }
+    return v;
+  }
+
+  // Saldo acumulado no fim do mês m (inteiro); null antes do mês inicial.
+  //   mês inicial:  saldo de abertura + resultado do mês
+  //   depois:       (saldo do mês anterior, ou o saldo real digitado na conta corrente) + resultado do mês
+  // O resultado do mês (totalsAt) não inclui a sobra mostrada na conta corrente: ela já está no saldo anterior.
+  function balanceEnd(idx, m) {
+    var st = idx.start;
+    if (st === null || m < st) return null;
+    var memo = idx.bal, k = m;
+    if (memo.has(m)) return memo.get(m);
+    while (k > st && !memo.has(k - 1)) k--;
+    for (; k <= m; k++) {
+      var res = totalsAt(idx, k).res, bal;
+      if (k === st) bal = idx.opening + res;
+      else { var ov = overrideAt(idx, k); bal = (ov === null ? memo.get(k - 1) : ov) + res; }
+      memo.set(k, bal);
+    }
+    return memo.get(m);
   }
 
   // O item já foi pago/recebido neste mês (m = inteiro do mês)?
@@ -63,8 +132,14 @@
     return c;
   }
 
-  // Valor do item no mês: lançamento do mês vence; senão o previsto; senão 0
+  // Valor do item no mês: lançamento do mês vence; senão o previsto; senão 0.
+  // Conta corrente (depois do mês inicial): o lançamento do mês (saldo real, source 'real') ou a sobra do
+  // mês anterior (source 'auto'). Esse valor é só para mostrar: nunca entra nas somas do mês (ver totalsAt).
   function amountAt(idx, item, m) {
+    if (isCarry(idx, item) && carryActive(idx, m)) {
+      var ov = overrideAt(idx, m);
+      return ov !== null ? { cents: ov, source: 'real' } : { cents: balanceEnd(idx, m - 1), source: 'auto' };
+    }
     var key = item.id + '|' + m;
     if (idx.entries.has(key)) return { cents: idx.entries.get(key), source: 'real' };
     if (inRange(item, m)) return { cents: projectedAt(idx, item, m), source: 'previsto' };
@@ -90,9 +165,11 @@
   function totalsAt(idx, m) {
     var t = idx.cache.get(m);
     if (t) return t;
-    var ent = 0, sai = 0;
+    var ent = 0, sai = 0, skip = carryActive(idx, m) ? idx.carry : null;
     for (var i = 0; i < idx.items.length; i++) {
-      var it = idx.items[i], c = amountAt(idx, it, m).cents;
+      var it = idx.items[i];
+      if (it === skip) continue;             // a sobra do mês anterior não é entrada do mês (o saldo já a carrega)
+      var c = amountAt(idx, it, m).cents;
       if (it.kind === 'entrada') ent += c; else sai += c;
     }
     t = { ent: ent, sai: sai, res: ent - sai };
@@ -107,11 +184,20 @@
   //  - baixa: "dar baixa" = marcar como pago/recebido. Por tipo de linha: n = quantas linhas,
   //    feitas = quantas já marcadas, feito/falta = soma (em centavos) do que já foi e do que falta.
   //    Os totais do mês (totalEntradas, totalSaidas, resultado) NÃO mudam com as marcas.
+  //  - carry: a conta corrente neste mês (ou null). { item, cents (o que aparece), auto (a sobra do mês
+  //    anterior), prev (esse mês, "AAAA-MM"), real (há saldo real lançado) }. Fica FORA de entradas, de
+  //    vazias e dos totais: o saldo acumulado já carrega essa sobra (somar de novo contaria em dobro).
+  //    saldo no fim do mês = cents + resultado.
   function monthView(idx, month) {
-    var m = mi(month), lines = [], i;
+    var m = mi(month), lines = [], i, carry = null;
     for (i = 0; i < idx.items.length; i++) {
       var it = idx.items[i];
       if (it.sim) continue;
+      if (carryActive(idx, m) && isCarry(idx, it)) {
+        var ca = amountAt(idx, it, m);
+        carry = { item: it, cents: ca.cents, auto: balanceEnd(idx, m - 1), prev: ms(m - 1), real: ca.source === 'real' };
+        continue;
+      }
       var a = amountAt(idx, it, m);
       lines.push({
         item: it, cents: a.cents, source: a.source, inst: installmentAt(it, m),
@@ -136,22 +222,28 @@
       entradas: ent, saidas: sai,
       vazias: { entradas: pick('entrada', false), saidas: pick('saida', false) },
       totalEntradas: t.ent, totalSaidas: t.sai, resultado: t.res,
-      baixa: { entradas: baixaOf(ent), saidas: baixaOf(sai) }
+      baixa: { entradas: baixaOf(ent), saidas: baixaOf(sai) },
+      carry: carry
     };
+  }
+
+  // A conta corrente num mês: { auto (centavos), prev, real, cents } ou null (outro item, ou mês sem "puxar").
+  function carryAt(idx, item, month) {
+    var m = mi(month);
+    if (!isCarry(idx, item) || !carryActive(idx, m)) return null;
+    var a = amountAt(idx, item, m);
+    return { cents: a.cents, auto: balanceEnd(idx, m - 1), prev: ms(m - 1), real: a.source === 'real' };
   }
 
   // ── linha do tempo com saldo acumulado ─────────────────────────────────
   // settings = { balance_start_month, opening_balance }
   // Antes do mês inicial o saldo é null (a planilha também só acumula a partir dele).
   function timeline(idx, settings, fromMonth, count) {
-    var start = mi(settings.balance_start_month), from = mi(fromMonth);
-    var bal = cents(settings.opening_balance || 0), m, k, out = [], t;
-    for (m = start; m < from; m++) bal += totalsAt(idx, m).res;
+    idx = withSettings(idx, settings);
+    var from = mi(fromMonth), m, k, out = [], t;
     for (k = 0; k < count; k++) {
       m = from + k; t = totalsAt(idx, m);
-      if (m < start) { out.push({ month: ms(m), entradas: t.ent, saidas: t.sai, resultado: t.res, saldo: null }); continue; }
-      bal += t.res;
-      out.push({ month: ms(m), entradas: t.ent, saidas: t.sai, resultado: t.res, saldo: bal });
+      out.push({ month: ms(m), entradas: t.ent, saidas: t.sai, resultado: t.res, saldo: balanceEnd(idx, m) });
     }
     return out;
   }
@@ -186,6 +278,12 @@
     return { item: null, upsertRates: [], deleteRates: [], upsertEntries: [], deleteEntries: [], addSettled: [], deleteSettled: [], replaced: 0 };
   }
 
+  // A conta corrente puxa a sobra neste mês (inteiro m)? Olha só o item e as configurações (sem índice).
+  function isCarryMonth(data, item, m) {
+    var st = data.settings;
+    return isCarryItem(item) && !!st && !!st.balance_start_month && m > mi(st.balance_start_month);
+  }
+
   function planEdit(data, item, month, newCents, scope) {
     var m = mi(month), idx = buildIndex({ items: [item], rates: data.rates.filter(function (r) { return r.item_id === item.id; }), entries: [] });
     var myRates = data.rates.filter(function (r) { return r.item_id === item.id; });
@@ -193,6 +291,16 @@
     var mySettled = (data.settled || []).filter(function (s) { return s.item_id === item.id; });
     var ops = newOps();
     var d1 = toDbDate(month), i;
+
+    // Conta corrente: nunca repete (o banco recusa), então "daqui em diante" não existe para ela.
+    // Depois do mês inicial, o valor digitado é o saldo REAL da conta no começo do mês: este plano grava o valor
+    // mesmo quando ele é igual à sobra prevista (voltar ao automático é pedido à parte, planCarryAuto).
+    // Quem decide se o plano é pedido é a tela: ela só pede quando o valor mudou, então abrir o item e salvar
+    // sem mexer no valor não fixa nada.
+    if (item.carry_over === true) {
+      if (isCarryMonth(data, item, m)) { ops.upsertEntries.push({ month: d1, amount: newCents }); return ops; }
+      scope = 'mes';
+    }
 
     if (scope === 'adiante') {
       if (newCents < 0) throw new Error('valor_negativo_nao_repete');
@@ -213,6 +321,28 @@
     else ops.upsertEntries.push({ month: d1, amount: newCents });
     // valor zero: a linha sai do mês, a marca sai junto
     if (newCents === 0) for (i = 0; i < mySettled.length; i++) if (mi(mySettled[i].month) === m) ops.deleteSettled.push(mySettled[i].month);
+    return ops;
+  }
+
+  // Conta corrente: voltar ao automático = apagar o saldo real lançado naquele mês (se houver).
+  function planCarryAuto(data, item, month) {
+    var m = mi(month), ops = newOps();
+    if ((data.entries || []).some(function (e) { return e.item_id === item.id && mi(e.month) === m; })) ops.deleteEntries.push(toDbDate(month));
+    return ops;
+  }
+
+  // Ligar (on = true) ou desligar a conta corrente de um item.
+  // Ligar: os valores que o item já tem DEPOIS do mês inicial passam a valer como saldo real da conta
+  //   naquele mês (ops.afetados diz quantos; a tela avisa antes).
+  // Desligar: esses mesmos valores são apagados, senão virariam entradas comuns e mexeriam no saldo.
+  function planCarry(data, item, on) {
+    var ops = newOps(), st = data.settings, i, after = [];
+    var start = st && st.balance_start_month ? mi(st.balance_start_month) : null;
+    var mine = (data.entries || []).filter(function (e) { return e.item_id === item.id; });
+    if (start !== null) after = mine.filter(function (e) { return mi(e.month) > start; });
+    ops.item = { carry_over: !!on };
+    ops.afetados = after.length;
+    if (!on) for (i = 0; i < after.length; i++) ops.deleteEntries.push(toDbDate(after[i].month));
     return ops;
   }
 
@@ -262,7 +392,7 @@
       items.push(ex.item);
       ex.rates.forEach(function (r) { rates.push(r); });
     });
-    return { items: items, rates: rates, entries: data.entries, settled: data.settled };
+    return { items: items, rates: rates, entries: data.entries, settled: data.settled, settings: data.settings };
   }
 
 
@@ -294,31 +424,135 @@
     return out;
   }
 
+  // Menor saldo da janela [k, k+h) depois de gastar `valor` no mês tl[k] (tl = linha do tempo SEM a compra,
+  // idx = o índice dela, já com as configurações). A compra baixa o saldo de todos os meses seguintes, menos os
+  // que vêm depois de um saldo real lançado na conta corrente: esse saldo recomeça a conta e apaga o efeito da
+  // compra (é o que a aba Simular mostra). Sem saldo real lançado mais à frente, é o menor saldo menos `valor`.
+  function worstAfterSpend(idx, tl, k, h, valor) {
+    var worst = null, worstMonth = null, erased = false;
+    for (var j = k; j < k + h && j < tl.length; j++) {
+      if (j > k && overrideAt(idx, mi(tl[j].month)) !== null) erased = true;
+      var sd = tl[j].saldo;
+      if (sd == null) continue;
+      var v = erased ? sd : sd - valor;
+      if (worst === null || v < worst) { worst = v; worstMonth = tl[j].month; }
+    }
+    return { min: worst, minMonth: worstMonth };
+  }
+
   // Primeiro mês (a partir de `from`) em que dá para pagar à vista mantendo o mínimo
   // durante `horizon` meses. Devolve null se não houver nos próximos `search` meses.
   function cashFitMonth(data, settings, totalCents, from, search, horizon) {
     var minC = minCents(settings);
     search = search || 24; horizon = horizon || 24;
-    var tl = timeline(buildIndex(data), settings, from, search + horizon);
+    var idx = withSettings(buildIndex(data), settings);
+    var tl = timeline(idx, settings, from, search + horizon);
     for (var k = 0; k < search; k++) {
-      var worst = null, worstMonth = null;
-      for (var j = k; j < k + horizon && j < tl.length; j++) {
-        var sd = tl[j].saldo;
-        if (sd == null) continue;
-        if (worst === null || sd < worst) { worst = sd; worstMonth = tl[j].month; }
-      }
-      if (worst !== null && worst - totalCents >= minC) {
-        return { month: tl[k].month, minAfter: worst - totalCents, minMonth: worstMonth };
+      var w = worstAfterSpend(idx, tl, k, horizon, totalCents);
+      if (w.min !== null && w.min >= minC) {
+        return { month: tl[k].month, minAfter: w.min, minMonth: w.minMonth };
       }
     }
     return null;
   }
 
+  // ── compras planejadas (a aba "Compras", a PRIORIDADES da planilha) ─────
+  // Cada compra é avaliada SOZINHA contra o orçamento de hoje, como na planilha: "se eu comprar só
+  // isto, no mês previsto, o saldo acumulado aguenta?". Quando uma compra é lançada no orçamento,
+  // as outras passam a ser avaliadas já com ela dentro.
+  //
+  // compra = { id, name, priority (1-5), status ('nada'|'planejado'|'orcando'|'concluido'),
+  //            est_amount, final_amount, exec_month, inst_total, inst_count, seq }   (valores em reais)
+  // Tudo que sai daqui é em centavos. `today` ("AAAA-MM") vem de fora: o motor nunca olha o relógio.
+  //
+  // Regras (as da planilha, menos os furos dela):
+  //  • valor da compra = valor final, se foi preenchido; senão o estimado;
+  //  • mês avaliado = o mês previsto; se ele já passou (ou não existe), o mês de hoje;
+  //  • à vista cabe quando o MENOR saldo acumulado dos próximos `horizon` meses, menos o valor, ainda
+  //    fica no saldo mínimo ou acima (a planilha olhava até o último mês da tabela);
+  //  • parcelado cabe quando o menor saldo, com as parcelas dentro do orçamento, fica no mínimo ou acima
+  //    (a planilha só comparava o resultado do mês de início com a parcela e ignorava os outros meses);
+  //  • melhor forma: à vista; senão parcelado; senão aguardar (e diz a partir de que mês cabe à vista);
+  //  • melhor compra: entre as que cabem à vista e não foram concluídas, a de maior prioridade;
+  //    na mesma prioridade, a mais barata; no empate, a cadastrada primeiro.
+  var PURCHASE_HORIZON = 24;
+
+  function purchaseValue(p) {
+    var fin = p.final_amount == null ? 0 : cents(p.final_amount);
+    var est = p.est_amount == null ? 0 : cents(p.est_amount);
+    return fin > 0 ? fin : (est > 0 ? est : 0);
+  }
+
+  // ctx = { idx, data, settings, minC, horizon, today }
+  function evalPurchase(ctx, p) {
+    var valor = purchaseValue(p), tm = mi(ctx.today);
+    var execM = p.exec_month ? normMonth(p.exec_month) : null;
+    var from = execM && mi(execM) > tm ? execM : ctx.today;
+    var r = {
+      purchase: p, valor: valor, from: from, execMonth: execM, late: !!execM && mi(execM) < tm,
+      state: 'ok', cash: null, inst: null, how: null, wait: null
+    };
+    if (p.status === 'concluido') { r.state = 'concluida'; return r; }
+    if (valor <= 0) { r.state = 'sem-valor'; return r; }
+    var tl = timeline(ctx.idx, ctx.settings, from, ctx.horizon);
+    var sum = summarize(tl, ctx.minC);
+    if (sum.min == null) { r.state = 'sem-saldo'; return r; }          // o saldo acumulado ainda nem começou
+    var w = worstAfterSpend(ctx.idx, tl, 0, ctx.horizon, valor);        // como no Simular (um saldo real lançado mais à frente apaga o efeito)
+    var after = w.min;
+    r.cash = { min: sum.min, minMonth: sum.minMonth, after: after, afterMonth: w.minMonth, fits: after >= ctx.minC, missing: Math.max(0, ctx.minC - after) };
+    var n = p.inst_count ? Math.floor(Number(p.inst_count)) : 0;
+    if (n >= 2) {
+      var given = p.inst_total != null && cents(p.inst_total) > 0;
+      var total = given ? cents(p.inst_total) : valor;                   // sem total informado: sem juros
+      var w = waysToPay(ctx.data, ctx.settings, { totalCents: total, start: from, options: [n], horizon: ctx.horizon })[0];
+      r.inst = { n: n, total: total, totalGiven: given, per: w.per, first: w.first, min: w.min, minMonth: w.minMonth, fits: !!w.fits };
+    }
+    r.how = r.cash.fits ? 'avista' : (r.inst && r.inst.fits ? 'parcelado' : 'aguardar');
+    if (r.how === 'aguardar') r.wait = cashFitMonth(ctx.data, ctx.settings, valor, from, 36, ctx.horizon);
+    return r;
+  }
+
+  function evaluatePurchases(data, settings, list, opts) {
+    opts = opts || {};
+    var today = normMonth(opts.today);
+    var ctx = { idx: withSettings(buildIndex(data), settings), data: data, settings: settings, minC: minCents(settings), horizon: opts.horizon || PURCHASE_HORIZON, today: today };
+    // ordem da lista: prioridade maior primeiro; na mesma prioridade, a cadastrada antes (seq do banco)
+    var rows = (list || []).map(function (p, i) { return { p: p, i: i }; });
+    rows.sort(function (a, b) {
+      if (a.p.priority !== b.p.priority) return b.p.priority - a.p.priority;
+      if (a.p.seq != null && b.p.seq != null && Number(a.p.seq) !== Number(b.p.seq)) return Number(a.p.seq) - Number(b.p.seq);
+      return a.i - b.i;
+    });
+    var items = rows.map(function (x) { return evalPurchase(ctx, x.p); });
+    function better(a, b) {                                             // a vence b? (empate: quem veio antes na lista)
+      if (a.purchase.priority !== b.purchase.priority) return a.purchase.priority > b.purchase.priority;
+      return a.valor < b.valor;
+    }
+    var bestCash = null, bestInst = null;
+    items.forEach(function (r) {
+      if (r.how === 'avista' && (!bestCash || better(r, bestCash))) bestCash = r;
+      if (r.how === 'parcelado' && (!bestInst || better(r, bestInst))) bestInst = r;
+    });
+    var tl0 = timeline(ctx.idx, settings, today, 1)[0];
+    return { today: today, minCents: ctx.minC, horizon: ctx.horizon, saldoToday: tl0 ? tl0.saldo : null,
+             items: items, best: bestCash, bestInstallment: bestCash ? null : bestInst };
+  }
+
+  // Uma compra avaliada -> simulação no formato da aba Simular (how: 'avista' | 'parcelado')
+  function purchaseSpec(r, how) {
+    var p = r.purchase;
+    if (how === 'parcelado' && r.inst) return { kind: 'saida', name: p.name, start: r.from, n: r.inst.n, perCents: r.inst.per, firstCents: r.inst.first, totalCents: r.inst.total };
+    return { kind: 'saida', name: p.name, start: r.from, n: 1, perCents: r.valor, firstCents: r.valor, totalCents: r.valor };
+  }
+
   return {
     mi: mi, ms: ms, normMonth: normMonth, addMonths: addMonths, diffMonths: diffMonths, toDbDate: toDbDate, cents: cents,
     buildIndex: buildIndex, inRange: inRange, projectedAt: projectedAt, amountAt: amountAt, installmentAt: installmentAt, isSettled: isSettled,
+    isCarry: isCarry, isCarryItem: isCarryItem, isCarryMonth: isCarryMonth, carryAt: carryAt,
     monthView: monthView, totalsAt: totalsAt, timeline: timeline, statusOf: statusOf, summarize: summarize,
-    planEdit: planEdit, planSettle: planSettle, newOps: newOps, splitInstallments: splitInstallments, expandSpec: expandSpec, withSims: withSims,
-    minCents: minCents, scenario: scenario, waysToPay: waysToPay, cashFitMonth: cashFitMonth
+    planEdit: planEdit, planSettle: planSettle, planCarryAuto: planCarryAuto, planCarry: planCarry, newOps: newOps,
+    splitInstallments: splitInstallments, expandSpec: expandSpec, withSims: withSims,
+    minCents: minCents, scenario: scenario, waysToPay: waysToPay, cashFitMonth: cashFitMonth,
+    purchaseValue: purchaseValue, evaluatePurchases: evaluatePurchases, purchaseSpec: purchaseSpec, PURCHASE_HORIZON: PURCHASE_HORIZON
   };
 });

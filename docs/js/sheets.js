@@ -53,7 +53,7 @@
   }
 
   // ── só leitura ─────────────────────────────────────────────────────────
-  function openReadOnly(item, month, cur, inst) {
+  function openReadOnly(item, month, cur, inst, carry) {
     var rows = [
       ['Valor em ' + F.monthShort(month), F.money(cur.cents)],
       ['Tipo', typeText(item)],
@@ -61,13 +61,22 @@
       ['Repete todo mês', item.recurring ? 'sim, desde ' + F.monthShort(item.start_month) : 'não'],
       ['Termina em', item.end_month ? F.monthShort(item.end_month) : 'sem fim']
     ];
+    if (carry) {                                                     // conta corrente: a sobra do mês anterior
+      rows = [
+        ['Saldo no começo de ' + F.monthName(month), F.money(cur.cents)],
+        [carry.real ? 'Previsto (sobra de ' + F.monthName(carry.prev) + ')' : 'Sobra de ' + F.monthName(carry.prev), F.money(carry.auto)],
+        ['Situação', carry.real ? 'Corrigido com o saldo real' : 'Automático'],
+        ['Tipo', 'Conta corrente']
+      ];
+    }
     // pago/recebido: só aparece se o banco já tem a tabela de marcas e a linha tem valor neste mês
-    if (App.state.data.settledOk !== false && cur.cents !== 0) {
+    if (!carry && App.state.data.settledOk !== false && cur.cents !== 0) {
       var feito = E.isSettled(App.index(), item, E.mi(month)), ent = item.kind === 'entrada';
       rows.splice(1, 0, ['Situação em ' + F.monthShort(month), ent ? (feito ? 'Recebido' : 'A receber') : (feito ? 'Pago' : 'A pagar')]);
     }
     if (inst) rows.push(['Parcela', inst.k + ' de ' + inst.n]);
     if (item.card_name) rows.push(['No cartão', item.card_name]);
+    if (!carry && E.isCarryItem(item)) rows.push(['Conta corrente', 'puxa a sobra do mês anterior']);
     var dl = h('dl', { 'class': 'leitura' });
     rows.forEach(function (r) { dl.appendChild(h('dt', { text: r[0] })); dl.appendChild(h('dd', { 'class': 'num', text: r[1] })); });
     var rec = d.openSheet({
@@ -82,13 +91,23 @@
     var item = findItem(itemId);
     if (!item) return;
     var idx = App.index(), cur = E.amountAt(idx, item, E.mi(month)), inst = E.installmentAt(item, E.mi(month));
-    if (!App.can()) return openReadOnly(item, month, cur, inst);
+    // Conta corrente: depois do mês inicial do saldo o "valor" é a sobra do mês anterior, que aparece
+    // sozinha; digitar aqui é dizer o saldo REAL da conta. `isCC`: o item é a conta corrente em qualquer mês (nunca repete).
+    var carry = E.carryAt(idx, item, month), isCC = E.isCarry(idx, item);
+    if (!App.can()) return openReadOnly(item, month, cur, inst, carry);
 
-    var val = d.moneyInput(cur.cents, { 'aria-label': 'Valor em ' + F.monthShort(month) });
-    var srcTxt = { real: 'Valor lançado por você (aparece em azul).', previsto: 'Valor que repete todo mês (aparece em preto).', vazio: 'Sem valor neste mês.' }[cur.source];
+    var valLabel = carry ? 'Saldo da conta no começo de ' + F.monthName(month) : 'Valor em ' + F.monthShort(month);
+    var val = d.moneyInput(cur.cents, { 'aria-label': valLabel });
+    var srcTxt = carry
+      ? (carry.real
+        ? 'Saldo que você lançou (aparece em azul). O previsto era ' + F.money(carry.auto) + ', a sobra de ' + F.monthName(carry.prev) + '.'
+        : 'Automático: é o que sobrou de ' + F.monthName(carry.prev) + '. Se o saldo do seu banco for outro, digite o valor real: os meses seguintes partem dele.')
+      : { real: 'Valor lançado por você (aparece em azul).', previsto: 'Valor que repete todo mês (aparece em preto).', vazio: 'Sem valor neste mês.' }[cur.source];
     var err = h('p', { 'class': 'erro-txt', role: 'alert', hidden: true });
     var scopeHint = h('div', { 'class': 'ajuda' });
     var scope = d.segmented([{ v: 'mes', t: 'Só este mês' }, { v: 'adiante', t: 'Deste mês em diante' }], 'mes', function () { hints(); }, 'Aplicar em');
+    var scopeBox = h('div', { 'class': 'campo' }, h('span', { 'class': 'rot', text: 'Aplicar em' }), scope.el, scopeHint);
+    scopeBox.hidden = isCC;                                   // a conta corrente não repete: não existe "deste mês em diante"
 
     var name = h('input', { 'class': 'entrada', type: 'text', maxlength: 80, autocomplete: 'off', value: item.name });
     var due = dueInput(item);
@@ -104,8 +123,8 @@
     function hints() {
       var cents = F.parseMoney(val.value.trim() === '' ? '0' : val.value);
       end.hide(!(item.recurring || scope.get() === 'adiante'));
-      settle.hide(!settleOk || isNaN(cents) || cents === 0);
-      if (isNaN(cents)) { scopeHint.textContent = ''; return; }
+      settle.hide(!settleOk || isNaN(cents) || cents === 0 || !!carry);   // a sobra do mês anterior não é "recebida"
+      if (isNaN(cents) || isCC) { scopeHint.textContent = ''; return; }
       if (scope.get() === 'mes') {
         var proj = E.projectedAt(idx, item, E.mi(month));
         scopeHint.textContent = item.recurring && cents === proj ? 'É o valor que já repete: nada muda.' : 'Vale só para ' + F.monthShort(month) + '. Os outros meses não mudam.';
@@ -121,6 +140,16 @@
     }
     val.addEventListener('input', hints);
 
+    // Com a chavinha da conta corrente ligada (ou se o item já é a conta corrente) ela nunca repete: o "Aplicar em"
+    // some (fica em "Só este mês") e o "Ainda uso este item" também (parar a conta corrente é desligar a chavinha).
+    function syncCarry() {
+      var on = carrySwitch ? carrySwitch.get() : isCC;
+      if (on) scope.set('mes');
+      scopeBox.hidden = on;
+      if (active) active.el.hidden = on;
+      hints();
+    }
+
     var saving = false;
     var save = h('button', { 'class': 'btn primario', type: 'button', text: 'Salvar', on: { click: onSave } });
     var cancel = h('button', { 'class': 'btn', type: 'button', text: 'Cancelar', on: { click: function () { rec.close(); } } });
@@ -128,6 +157,8 @@
     function onSave() {
       if (saving) return;
       showError(err, '');
+      // conta corrente: campo vazio não quer dizer "automático" (isso é o botão "Voltar ao automático")
+      if (carry && val.value.trim() === '') return showError(err, 'Digite o saldo da conta, ou toque em "Voltar ao automático".');
       var cents = F.parseMoney(val.value.trim() === '' ? '0' : val.value);
       if (isNaN(cents)) return showError(err, 'Digite o valor assim: 1.234,56');
       if (scope.get() === 'adiante' && cents < 0) return showError(err, 'O valor que repete todo mês não pode ser negativo.');
@@ -140,11 +171,18 @@
       if (nm !== item.name) patch.name = nm;
       if (dd.v !== (item.due_day || null)) patch.due_day = dd.v;
       if (card && (card.value || null) !== (item.card_name || null)) patch.card_name = card.value || null;
-      if (active && active.box.checked !== (item.active !== false)) patch.active = active.box.checked;
+      if (active && !active.el.hidden && active.box.checked !== (item.active !== false)) patch.active = active.box.checked;
+      // a conta corrente não fica "parada" (parar é desligar a chavinha): ligar a chavinha num item parado o reativa.
+      // (Um item que já é conta corrente e está parado, só por edição direta no banco, segue valendo: o motor não olha "ativo".)
+      var carryChanged = !!carrySwitch && carrySwitch.get() !== (item.carry_over === true);
+      if (carryChanged && carrySwitch.get() && item.active === false) patch.active = true;
 
       var ops = null;
       if (scope.get() === 'adiante' || cents !== cur.cents) ops = planFor(cents);
-      if (settleOk && cents !== 0 && settle.get() !== wasSettled) ops = E.planSettle(App.state.data, item, month, settle.get(), ops);
+      if (settleOk && cents !== 0 && !carry && settle.get() !== wasSettled) ops = E.planSettle(App.state.data, item, month, settle.get(), ops);
+      // Ligar ou desligar a conta corrente é salvo sozinho. Junto com um valor novo, o resultado dependeria da ordem
+      // das gravações (o valor digitado poderia ser apagado pelo "desligar"), então a tela pede uma coisa de cada vez.
+      if (carryChanged && ops) return showError(err, 'Ligue ou desligue a conta corrente sem mudar o valor ao mesmo tempo. Salve a chavinha primeiro e ajuste o valor depois.');
       // fim: só vale se o item repete (já repetia ou vai repetir)
       var willRepeat = item.recurring || (ops && ops.item && ops.item.recurring);
       if (willRepeat) {
@@ -154,17 +192,45 @@
         if ((newEnd || null) !== (item.end_month || null)) patch.end_month = newEnd;
       }
 
+      // ligar/desligar a conta corrente (puxar a sobra do mês anterior)
+      var carryPlan = null;
+      if (carryChanged) carryPlan = E.planCarry(App.state.data, item, carrySwitch.get());
+      var ask = Promise.resolve(true);
+      if (carryPlan && carryPlan.afetados > 0) {
+        var n = carryPlan.afetados, startTxt = F.monthShort(App.state.data.settings.balance_start_month);
+        ask = d.confirmBox(carryPlan.item.carry_over
+          ? { title: 'Ligar a conta corrente?', ok: 'Ligar', text: (n === 1 ? 'Este item tem 1 valor lançado depois de ' + startTxt + '. Ele passa' : 'Este item tem ' + n + ' valores lançados depois de ' + startTxt + '. Eles passam') + ' a valer como o saldo real da conta naquele mês.' }
+          : { title: 'Desligar a conta corrente?', ok: 'Desligar', danger: true, text: (n === 1 ? 'O saldo real que você lançou depois de ' + startTxt + ' será apagado' : 'Os ' + n + ' saldos reais que você lançou depois de ' + startTxt + ' serão apagados') + ': sem a conta corrente eles virariam entradas comuns e mexeriam no saldo.' });
+      }
+
+      ask.then(function (yes) {
+        if (!yes) return;
+        saving = true; save.disabled = true;
+        var steps = Promise.resolve({ ok: true });
+        if (ops) steps = steps.then(function () { return App.data.applyEdit(item.id, ops); });
+        steps.then(function (r) {
+          if (!r.ok) return r;
+          if (!Object.keys(patch).length) return r;
+          return App.data.updateItem(item.id, patch);
+        }).then(function (r) {
+          if (!r.ok || !carryPlan) return r;
+          return App.data.applyEdit(item.id, carryPlan);
+        }).then(function (r) {
+          if (!r.ok) { saving = false; save.disabled = false; showError(err, r.error); return; }
+          if (!ops && !carryPlan && !Object.keys(patch).length) { rec.close(); return; }
+          done(rec, 'Salvo');
+        });
+      });
+    }
+
+    // conta corrente: apaga o saldo real lançado neste mês e volta a sobra do mês anterior
+    function onAuto() {
+      if (saving) return;
+      showError(err, '');
       saving = true; save.disabled = true;
-      var steps = Promise.resolve({ ok: true });
-      if (ops) steps = steps.then(function () { return App.data.applyEdit(item.id, ops); });
-      steps.then(function (r) {
-        if (!r.ok) return r;
-        if (!Object.keys(patch).length) return r;
-        return App.data.updateItem(item.id, patch);
-      }).then(function (r) {
+      App.data.applyEdit(item.id, E.planCarryAuto(App.state.data, item, month)).then(function (r) {
         if (!r.ok) { saving = false; save.disabled = false; showError(err, r.error); return; }
-        if (!ops && !Object.keys(patch).length) { rec.close(); return; }
-        done(rec, 'Salvo');
+        done(rec, 'Voltou ao automático');
       });
     }
 
@@ -178,6 +244,19 @@
       });
     }
 
+    // Conta corrente: "puxar a sobra do mês anterior". Só para entrada que não repete, e só um item por vez.
+    var carrySwitch = null, carryNote = null;
+    if (item.kind === 'entrada') {
+      var outraCC = App.state.data.items.filter(function (i) { return i.id !== item.id && E.isCarryItem(i); })[0];
+      if (item.recurring) carryNote = 'Conta corrente: só vale para uma entrada que não repete todo mês (a que guarda o dinheiro da sua conta).';
+      else if (outraCC) carryNote = 'Conta corrente: já é o item "' + outraCC.name + '". Só um item por vez; desligue o outro antes.';
+      else {
+        carrySwitch = d.chaveRow('Puxar a sobra do mês anterior', item.carry_over === true, syncCarry);
+        carryNote = 'Para o item que guarda o dinheiro que você tem na conta do banco. Em cada mês depois de ' + F.monthShort(App.state.data.settings.balance_start_month)
+          + ', ele mostra o que sobrou do mês anterior, sem somar de novo no saldo. Se o banco mostrar outro valor, você corrige no mês.';
+      }
+    }
+
     var opcoes = h('details', { style: 'margin:4px 0 12px' },
       h('summary', { text: 'Mais opções', style: 'min-height:44px;display:flex;align-items:center;font-weight:600;color:var(--azul);cursor:pointer' }),
       h('div', { style: 'padding-top:10px' },
@@ -186,16 +265,19 @@
         card ? d.field('No cartão', card, 'Só para lembrar em qual cartão a parcela cai. Não soma duas vezes.') : null,
         end.el,
         active ? active.el : null,
+        carrySwitch ? carrySwitch.el : null,
+        carryNote ? h('div', { 'class': 'ajuda', style: 'margin:-2px 0 12px', text: carryNote }) : null,
         h('button', { 'class': 'btn perigo cheio', type: 'button', text: 'Apagar item', on: { click: onDelete } })));
 
     var body = h('div', null,
       inst ? h('p', { 'class': 'ajuda', style: 'margin:-6px 0 10px', text: 'Parcela ' + inst.k + ' de ' + inst.n + (item.card_name ? ' no cartão ' + item.card_name : '') }) : null,
-      d.field('Valor em ' + F.monthShort(month), val, srcTxt),
-      h('div', { 'class': 'campo' }, h('span', { 'class': 'rot', text: 'Aplicar em' }), scope.el, scopeHint),
+      d.field(valLabel, val, srcTxt),
+      carry && carry.real ? h('button', { 'class': 'btn-texto', type: 'button', style: 'margin:-4px 0 10px', text: 'Voltar ao automático (' + F.money(carry.auto) + ')', on: { click: onAuto } }) : null,
+      scopeBox,
       settle.el,
       err, opcoes);
     var rec = d.openSheet({ title: item.name, sub: F.monthLong(month) + (item.kind === 'entrada' ? ', entrada' : ', saída'), body: body, footer: [cancel, save] });
-    hints();
+    syncCarry();
   }
 
   // ── item novo ──────────────────────────────────────────────────────────

@@ -81,6 +81,10 @@
     if (/usuario_nao_encontrado/i.test(msg)) return 'Essa pessoa não foi encontrada.';
     if (/papel_invalido|validade_invalida/i.test(msg)) return 'Opção inválida.';
     if (/nao_autenticado|JWT|not authenticated|Auth session missing|refresh.?token|session_(not_found|expired)/i.test(msg)) return 'Sua sessão expirou. Entre de novo.';
+    // conta corrente (coluna carry_over, versão 1.3.0 do 01_schema.sql)
+    if (/carry_over/i.test(msg) && /column|schema cache|does not exist|could not find/i.test(msg)) return 'O banco ainda não tem a conta corrente. No Supabase, rode o arquivo 01_schema.sql de novo (é seguro: não apaga nada) e toque em atualizar.';
+    if (/items_one_carry/i.test(msg)) return 'Já existe outra conta corrente. Só um item por vez: desligue a outra antes.';
+    if (/items_carry_chk/i.test(msg)) return 'A conta corrente precisa ser uma entrada que não repete todo mês.';
     if (/duplicate key/i.test(msg)) return 'Esse registro já existe.';
     if (/violates check constraint/i.test(msg)) return 'Algum valor não é aceito. Confira nome, dia, datas e valores.';
     return 'Não deu certo: ' + (msg || 'erro desconhecido') + '.';
@@ -223,13 +227,21 @@
   // As marcas de pago/recebido ficam numa tabela que veio numa versão nova do 01_schema.sql.
   // Quem ainda não rodou essa versão no Supabase continua usando o app normal, só sem a
   // chavinha (settledOk = false): o app avisa na tela do Mês o que fazer.
-  function missingTable(e) {
+  function missingTable(e, table) {
     var code = String((e && e.code) || ''), msg = String((e && (e.message || e.details || e.hint)) || '');
-    return code === '42P01' || code === 'PGRST205' || (/budget_settled/.test(msg) && /does not exist|schema cache|could not find/i.test(msg));
+    return code === '42P01' || code === 'PGRST205' || (new RegExp(table || 'budget_settled').test(msg) && /does not exist|schema cache|could not find/i.test(msg));
   }
   function fetchSettled() {
     return fetchAll('budget_settled', ['item_id', 'month']).then(function (rows) { return { rows: rows, ok: true }; }, function (e) {
-      if (missingTable(e)) return { rows: [], ok: false };
+      if (missingTable(e, 'budget_settled')) return { rows: [], ok: false };
+      throw e;
+    });
+  }
+  // A lista de compras (aba Compras) também veio numa versão nova do 01_schema.sql: sem a tabela, o app
+  // segue normal e a aba Compras explica o que fazer (purchasesOk = false).
+  function fetchPurchases() {
+    return fetchAll('purchases', ['seq']).then(function (rows) { return { rows: rows, ok: true }; }, function (e) {
+      if (missingTable(e, 'purchases')) return { rows: [], ok: false };
       throw e;
     });
   }
@@ -240,11 +252,12 @@
         fetchAll('item_rates', ['item_id', 'from_month']),
         fetchAll('budget_entries', ['item_id', 'month']),
         sb.from('app_settings').select('*'),
-        fetchSettled()
+        fetchSettled(),
+        fetchPurchases()
       ]).then(function (p) {
         if (p[3].error) throw p[3].error;
         var st = p[3].data && p[3].data[0] ? p[3].data[0] : { balance_start_month: F().currentMonth() + '-01', opening_balance: 0, min_balance: 1000 };
-        var data = { items: p[0], rates: p[1], entries: p[2], settled: p[4].rows, settledOk: p[4].ok, settings: st };
+        var data = { items: p[0], rates: p[1], entries: p[2], settled: p[4].rows, settledOk: p[4].ok, purchases: p[5].rows, purchasesOk: p[5].ok, settings: st };
         store.set(CACHE_KEY + uid, { at: Date.now(), data: data });
         return good({ data: data });
       }).catch(fail);
@@ -308,14 +321,24 @@
   // Aplica o plano que o motor (Engine.planEdit) devolveu. Ordem pensada para
   // nunca deixar o item sem valor se algo falhar no meio: primeiro grava o novo
   // valor, só depois apaga o que ele substitui.
+  // Exceção: ao DESLIGAR a conta corrente os saldos reais lançados saem antes de o item virar comum. Se a gravação
+  // parasse no meio, o item ainda seria conta corrente e o saldo não mudaria; na ordem contrária, esses saldos
+  // passariam a somar como entradas e inflariam o saldo.
   function applyEdit(itemId, ops) {
     var p = Promise.resolve();
+    var carryOff = !!(ops.item && ops.item.carry_over === false);
+    function dropEntries() {
+      ops.deleteEntries.forEach(function (mo) {
+        p = p.then(function () { return sb.from('budget_entries').delete().eq('item_id', itemId).eq('month', mo).then(must); });
+      });
+    }
     if (ops.upsertRates.length) p = p.then(function () {
       return sb.from('item_rates').upsert(ops.upsertRates.map(function (r) { return { item_id: itemId, from_month: r.from_month, amount: r.amount / 100 }; }), { onConflict: 'item_id,from_month' }).then(must);
     });
     if (ops.upsertEntries.length) p = p.then(function () {
       return sb.from('budget_entries').upsert(ops.upsertEntries.map(function (e) { return { item_id: itemId, month: e.month, amount: e.amount / 100 }; }), { onConflict: 'item_id,month' }).then(must);
     });
+    if (carryOff) dropEntries();
     if (ops.item) p = p.then(function () {
       return sb.from('budget_items').update(ops.item).eq('id', itemId).select().then(function (r) {
         must(r);
@@ -325,9 +348,7 @@
     ops.deleteRates.forEach(function (fm) {
       p = p.then(function () { return sb.from('item_rates').delete().eq('item_id', itemId).eq('from_month', fm).then(must); });
     });
-    ops.deleteEntries.forEach(function (mo) {
-      p = p.then(function () { return sb.from('budget_entries').delete().eq('item_id', itemId).eq('month', mo).then(must); });
-    });
+    if (!carryOff) dropEntries();
     // marcas de pago/recebido por último: o valor já está salvo quando a marca entra
     (ops.addSettled || []).forEach(function (mo) {
       p = p.then(function () { return markSettled(itemId, mo, true).then(must); });
@@ -357,6 +378,33 @@
     }).catch(fail);
   }
 
+  // ── compras (aba Compras) ──────────────────────────────────────────────
+  // row: campos de purchases em reais ou texto; o banco confere tudo de novo (restrições e RLS).
+  function createPurchase(row) {
+    var r0 = {};
+    for (var k in row) r0[k] = row[k];
+    delete r0.id; delete r0.seq; delete r0.created_by; delete r0.created_at; delete r0.updated_at;
+    return sb.from('purchases').insert(r0).select().then(function (r) {
+      must(r);
+      if (!r.data || !r.data.length) return fail({ message: 'sem_permissao' });
+      return good({ id: r.data[0].id });
+    }).catch(fail);
+  }
+  function updatePurchase(id, patch) {
+    return sb.from('purchases').update(patch).eq('id', id).select().then(function (r) {
+      must(r);
+      if (!r.data || !r.data.length) return fail({ message: 'sem_permissao' });
+      return good();
+    }).catch(fail);
+  }
+  function deletePurchase(id) {
+    return sb.from('purchases').delete().eq('id', id).select().then(function (r) {
+      must(r);
+      if (!r.data || !r.data.length) return fail({ message: 'sem_permissao' });
+      return good();
+    }).catch(fail);
+  }
+
   // ── administração de acessos ───────────────────────────────────────────
   function listProfiles() {
     return sb.from('profiles').select('*').order('created_at', { ascending: true }).then(function (r) { return r.error ? fail(r.error) : good({ rows: r.data || [] }); }, fail);
@@ -381,6 +429,7 @@
     updatePassword: updatePassword, changePassword: changePassword,
     loadProfile: loadProfile, redeem: redeem, loadAll: loadAll, readCache: readCache, clearCache: clearCache, patchCache: patchCache,
     createItem: createItem, updateItem: updateItem, deleteItem: deleteItem, applyEdit: applyEdit, saveSettings: saveSettings, setSettled: setSettled,
+    createPurchase: createPurchase, updatePurchase: updatePurchase, deletePurchase: deletePurchase,
     listProfiles: listProfiles, listInvites: listInvites, createInvite: createInvite, revokeInvite: revokeInvite, setRole: setRole
   };
 })(window.App = window.App || {});

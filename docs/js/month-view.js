@@ -102,6 +102,28 @@
       shown.length ? ul : h('p', { 'class': 'vazio', text: vazio }));
   }
 
+  // ── conta corrente: a sobra do mês anterior ─────────────────────────────
+  // Aparece em duas partes: uma linha no resumo ("Veio de outubro") e a linha do próprio item, que se toca
+  // para corrigir com o saldo real do banco. Fica FORA de "Entradas" e do "Resultado do mês": o saldo
+  // acumulado já carrega essa sobra, e somar de novo a contaria duas vezes.
+  function carrySummary(c) {
+    return h('div', { 'class': 'ex-linha ex-veio' },
+      h('span', { text: 'Veio de ' + F.monthName(c.prev) + (c.real ? ' (corrigido)' : '') }),
+      h('span', { 'class': 'v' + (c.cents < 0 ? ' neg-txt' : ''), text: F.money(c.cents) }));
+  }
+  function carrySection(c, month) {
+    var it = c.item;
+    var meta = c.real ? 'Saldo real que você lançou. O previsto era ' + F.money(c.auto) : 'Sobra de ' + F.monthName(c.prev) + ', automática';
+    var btn = h('button', { 'class': 'linha', type: 'button', on: { click: function () { App.sheets.openLaunch(it.id, month); } } },
+      h('span', { 'class': 'dia' }),
+      h('span', { 'class': 'nome' }, h('span', { 'class': 'nome-txt', text: it.name }), h('span', { 'class': 'meta', text: meta })),
+      h('span', { 'class': 'valor' + (c.real ? ' real' : '') + (c.cents < 0 ? ' neg-txt' : '') }, h('span', { 'class': 'sr', text: 'R$ ' }), F.money(c.cents, { bare: true }),
+        c.real ? h('span', { 'class': 'sr', text: ', valor lançado' }) : null));
+    return h('section', { 'aria-label': 'Conta corrente' },
+      h('div', { 'class': 'secao' }, h('h2', { text: 'Conta corrente' }), h('span', { 'class': 'total', text: F.money(c.cents) })),
+      h('ul', { 'class': 'livro' }, h('li', null, btn)));
+  }
+
   // Sob "Entradas"/"Saídas" do resumo: o que ainda falta (só aparece depois da primeira marca)
   function faltaLine(b, kind) {
     if (!b.feitas) return null;
@@ -144,6 +166,7 @@
     else if (stt === 'low') chip = h('span', { 'class': 'estado low' }, d.statusIcon('low'), 'Abaixo do mínimo de ' + F.money(minC));
     else chip = h('span', { 'class': 'estado neg' }, d.statusIcon('neg'), 'Saldo negativo');
     main.appendChild(h('section', { 'class': 'extrato', 'aria-label': 'Resumo de ' + F.monthLong(month) },
+      v.carry ? carrySummary(v.carry) : null,
       h('div', { 'class': 'ex-linha' }, h('span', { text: 'Entradas' }), h('span', { 'class': 'v', text: F.money(v.totalEntradas) })),
       faltaLine(v.baixa.entradas, 'entrada'),
       h('div', { 'class': 'ex-linha' }, h('span', { text: 'Saídas' }), h('span', { 'class': 'v', text: F.money(v.totalSaidas) })),
@@ -168,6 +191,7 @@
     }
 
     // listas
+    if (v.carry) main.appendChild(carrySection(v.carry, month));
     main.appendChild(section('Saídas', 'saida', v.saidas, v.totalSaidas, month, 'Nenhuma saída neste mês.', ctx, v.baixa.saidas));
     main.appendChild(section('Entradas', 'entrada', v.entradas, v.totalEntradas, month, 'Nenhuma entrada neste mês.', ctx, v.baixa.entradas));
 
