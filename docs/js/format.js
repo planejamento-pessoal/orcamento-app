@@ -122,10 +122,34 @@
     function p(n) { return (n < 10 ? '0' : '') + n; }
     return p(d.getDate()) + '/' + p(d.getMonth() + 1) + '/' + d.getFullYear();
   }
+  // Instante (em milissegundos) de um horário do Supabase; NaN se não der para ler.
+  function toMs(iso) { return toDate(iso).getTime(); }
+  // Há quanto tempo: "agora há pouco", "há 12 min", "há 5 h", "há 3 dias". nowMs = agora em milissegundos.
+  // Horário no futuro (relógio do celular atrasado) conta como "agora há pouco". Horário ilegível: ''.
+  function agoText(iso, nowMs) {
+    var t = toMs(iso);
+    if (isNaN(t)) return '';
+    var s = Math.max(0, Math.floor(((nowMs == null ? Date.now() : nowMs) - t) / 1000));
+    if (s < 60) return 'agora há pouco';
+    var m = Math.floor(s / 60);
+    if (m < 60) return 'há ' + m + ' min';
+    var hh = Math.floor(m / 60);
+    if (hh < 48) return 'há ' + hh + ' h';
+    return 'há ' + Math.floor(hh / 24) + ' dias';
+  }
+  // Quanto falta esperar, sempre arredondado para CIMA (nunca diz "0 s"): 25 -> "25 s", 61 -> "2 min", 3700 -> "2 h"
+  function waitText(sec) {
+    var s = Math.max(1, Math.ceil(Number(sec) || 0));
+    if (s < 60) return s + ' s';
+    var m = Math.ceil(s / 60);
+    if (m < 60) return m + ' min';
+    return Math.ceil(m / 60) + ' h';
+  }
 
   return {
     monthName: monthName, monthAbbr: monthAbbr, monthShort: monthShort, monthLong: monthLong, monthTick: monthTick,
     currentMonth: currentMonth, money: money, plain: plain, compact: compact, parseMoney: parseMoney,
-    normalizeCode: normalizeCode, prettyCode: prettyCode, passwordProblem: passwordProblem, dueText: dueText, whenShort: whenShort, dateShort: dateShort
+    normalizeCode: normalizeCode, prettyCode: prettyCode, passwordProblem: passwordProblem, dueText: dueText, whenShort: whenShort, dateShort: dateShort,
+    toMs: toMs, agoText: agoText, waitText: waitText
   };
 });

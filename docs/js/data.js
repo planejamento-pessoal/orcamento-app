@@ -405,6 +405,124 @@
     }).catch(fail);
   }
 
+  // ── saldo na 99Pay (só leitura; só o admin vê) ─────────────────────────
+  // Quem lê o MeuPluggy é a função "saldo-99pay" do Supabase (pasta supabase/functions). O app nunca fala com a
+  // Pluggy e não guarda chave nenhuma dela. Cada leitura fica na tabela pay99_balance_reads (arquivo 02_saldo99.sql),
+  // que só o admin consegue ler. O valor NÃO entra nas contas do orçamento: serve para conferir com a 99Pay.
+  // installed:false = o banco ainda não tem a tabela (02 não rodou): o app segue normal e o cartão nem aparece.
+  var S99 = { FN: 'saldo-99pay', TABELA: 'pay99_balance_reads', VELHO_H: 30, PEDIDO_MS: 50000, PENDENTE_S: 90 };
+  var S99_SUAVES = ['em_andamento', 'limite_diario', 'intervalo'];   // recusas de propósito do banco: não são defeito
+  var S99_TEXTO = {
+    em_andamento: 'Já tem uma leitura em andamento. Espere um instante.',
+    limite_diario: 'Já foram feitas 12 leituras nas últimas 24 horas. Tente de novo mais tarde.',
+    sem_login: 'Sua sessão expirou. Entre de novo.',
+    sem_permissao: 'Só o admin pode ler o saldo da 99Pay.',
+    origem_invalida: 'O app e a função de leitura não combinam (versões diferentes). Atualize o app e tente de novo.',
+    use_post: 'O app e a função de leitura não combinam (versões diferentes). Atualize o app e tente de novo.',
+    origem_nao_permitida: 'A função de leitura não aceitou o endereço deste app. No Supabase, confira o segredo APP_ORIGIN (veja o LEIA-ME).',
+    funcao_nao_configurada: 'A função de leitura está instalada, mas faltam segredos dela no Supabase (veja o LEIA-ME).',
+    funcao_nao_instalada: 'A função de leitura ainda não foi instalada no Supabase (veja o LEIA-ME).',
+    sem_resposta_da_funcao: 'Não consegui falar com a função de leitura. Veja se a internet está boa; se estiver, a função pode não estar instalada ou não aceitou o endereço do app (veja o LEIA-ME).',
+    resposta_estranha: 'A função respondeu algo que o app não entendeu. Nada foi alterado.',
+    banco_sem_migracao: 'O banco ainda não tem a leitura do saldo. No Supabase, rode o arquivo 02_saldo99.sql.',
+    banco_indisponivel: 'O Supabase não respondeu direito. Tente de novo em instantes.',
+    gravacao_falhou: 'Li o saldo, mas não consegui gravar o resultado. Tente de novo.',
+    pluggy_login_recusado: 'A Pluggy recusou as chaves da função. Confira os segredos PLUGGY_CLIENT_ID e PLUGGY_CLIENT_SECRET no Supabase.',
+    pluggy_limite: 'A Pluggy pediu para esperar (muitas consultas). Tente de novo mais tarde.',
+    pluggy_indisponivel: 'A Pluggy está fora do ar agora. Tente de novo mais tarde.',
+    item_nao_encontrado: 'A Pluggy não encontrou a conexão da 99Pay. No MeuPluggy, veja se ela ainda está conectada e confira o segredo PLUGGY_ITEM_ID.',
+    pluggy_resposta_inesperada: 'A Pluggy respondeu algo que a função não entendeu. Nada foi alterado.',
+    sem_conta_bancaria: 'A Pluggy não mostrou nenhuma conta da 99Pay.',
+    varias_contas: 'A Pluggy mostrou mais de uma conta e a função não sabe qual usar. Informe o segredo PLUGGY_ACCOUNT_ID (veja o LEIA-ME).',
+    conta_nao_encontrada: 'A conta informada em PLUGGY_ACCOUNT_ID não apareceu na Pluggy.',
+    moeda_inesperada: 'A conta não está em reais, então não mostrei o valor.',
+    saldo_invalido: 'A Pluggy mandou um saldo que não parece válido. Nada foi alterado.',
+    sem_hora_do_dado: 'A Pluggy não disse quando o dado foi atualizado, então não mostro o saldo (poderia estar velho sem eu saber).',
+    erro_interno: 'Deu erro dentro da função (não foi a Pluggy). Tente de novo; se repetir, veja os logs da função no Supabase.',
+    sem_resposta: 'A leitura anterior não terminou (a função não respondeu a tempo).'
+  };
+  var S99_ITEM = {   // situação da conexão no MeuPluggy (UPDATED não precisa de aviso)
+    UPDATING: 'O MeuPluggy está atualizando agora; o saldo pode mudar em alguns minutos.',
+    LOGIN_ERROR: 'O MeuPluggy não conseguiu entrar na 99Pay. Abra o MeuPluggy e reconecte a conta.',
+    OUTDATED: 'A última atualização do MeuPluggy deu erro, então o dado pode estar velho. Abra o MeuPluggy e toque em Atualizar.',
+    WAITING_USER_INPUT: 'O MeuPluggy está esperando uma ação sua. Abra o MeuPluggy.'
+  };
+  // Texto em português para um código da função (ou do banco). Código que o app não conhece aparece como está
+  // (só letras minúsculas, números e _), nunca texto vindo de fora.
+  function saldo99Text(code, waitS) {
+    var c = typeof code === 'string' && /^[a-z0-9_]{1,40}$/.test(code) ? code : 'erro_interno';
+    if (c === 'intervalo') return waitS > 0 ? 'Leitura feita há pouco. Dá para ler de novo em ' + F().waitText(waitS) + '.' : 'Leitura feita há pouco. Espere um pouco para ler de novo.';
+    return Object.prototype.hasOwnProperty.call(S99_TEXTO, c) ? S99_TEXTO[c] : 'Não deu certo (código ' + c + ').';
+  }
+  function saldo99Hint(itemStatus) {
+    return typeof itemStatus === 'string' && Object.prototype.hasOwnProperty.call(S99_ITEM, itemStatus) ? S99_ITEM[itemStatus] : '';
+  }
+
+  // Leituras guardadas (a mais nova primeiro). installed:false = a tabela não existe ainda.
+  function loadSaldo99() {
+    return withSession(function () {
+      return sb.from(S99.TABELA).select('id,source,requested_at,finished_at,ok,balance_cents,data_as_of,item_status,error')
+        .order('requested_at', { ascending: false }).limit(20).then(function (r) {
+          if (r.error) return missingTable(r.error, S99.TABELA) ? good({ installed: false, rows: [] }) : fail(r.error);
+          return good({ installed: true, rows: r.data || [] });
+        }, fail);
+    });
+  }
+
+  // Resposta da função -> { ok:true, cents, dataAt, itemStatus } ou { ok:false, code, soft, wait, itemStatus, error }.
+  // Só entram códigos no formato esperado; o texto mostrado é sempre o nosso (saldo99Text).
+  function saldo99Reply(b, status) {
+    if (b && b.ok === true && typeof b.saldo_centavos === 'number' && isFinite(b.saldo_centavos) && typeof b.dado_em === 'string' && !isNaN(F().toMs(b.dado_em))) {
+      return good({ cents: b.saldo_centavos, dataAt: b.dado_em, itemStatus: typeof b.item_status === 'string' ? b.item_status : null });
+    }
+    var code = b && typeof b.codigo === 'string' && /^[a-z0-9_]{1,40}$/.test(b.codigo) ? b.codigo
+      : status === 404 ? 'funcao_nao_instalada' : status === 401 ? 'sem_login' : status === 403 ? 'sem_permissao' : status === 503 ? 'funcao_nao_configurada' : 'resposta_estranha';
+    var wait = b && typeof b.espere_s === 'number' && isFinite(b.espere_s) ? Math.min(86400, Math.max(1, Math.ceil(b.espere_s))) : 0;
+    var st = b && typeof b.item_status === 'string' && /^[A-Z_]{1,30}$/.test(b.item_status) ? b.item_status : null;
+    return { ok: false, code: code, soft: S99_SUAVES.indexOf(code) >= 0, wait: wait, itemStatus: st, error: saldo99Text(code, wait) };
+  }
+  // Pede uma leitura à função. origem: 'ao_abrir' (automática) ou 'manual' (botão). Nunca lança erro.
+  function readSaldo99(origem) {
+    function semResposta() { return saldo99Reply({ codigo: 'sem_resposta_da_funcao' }, 0); }
+    return withSession(function () {
+      return sb.functions.invoke(S99.FN, { body: { origem: origem }, timeout: S99.PEDIDO_MS }).then(function (r) {
+        if (!r.error) return saldo99Reply(r.data, 200);
+        var res = r.error.context;   // resposta com status de erro (401, 403, 404, 503...): o corpo traz o código quando é da nossa função
+        if (r.error.name === 'FunctionsHttpError' && res && typeof res.json === 'function') {
+          return res.json().then(function (b) { return saldo99Reply(b, res.status); }, function () { return saldo99Reply(null, res.status); });
+        }
+        return semResposta();         // sem rede, tempo esgotado ou bloqueio do navegador (CORS)
+      }, semResposta);
+    });
+  }
+
+  // Resumo das leituras guardadas, para o cartão: o último saldo BOM (mesmo que a última tentativa tenha falhado),
+  // se ele está velho (dado com mais de 30 h: o MeuPluggy atualiza a cada 24 h), e o que houve na última tentativa.
+  function saldo99Summary(rows, nowMs) {
+    var now = nowMs == null ? Date.now() : nowMs, list = Array.isArray(rows) ? rows : [], i, ok = null, t;
+    var out = { has: false, cents: null, dataAt: null, readAt: null, old: false, itemStatus: null, pending: false, fail: null };
+    for (i = 0; i < list.length; i++) {
+      var x = list[i];
+      if (x && x.ok === true && x.balance_cents != null && isFinite(Number(x.balance_cents)) && x.data_as_of) { ok = x; break; }
+    }
+    if (ok) {
+      out.has = true; out.cents = Number(ok.balance_cents); out.dataAt = ok.data_as_of; out.readAt = ok.finished_at || ok.requested_at;
+      out.itemStatus = ok.item_status || null;
+      t = F().toMs(ok.data_as_of);
+      out.old = isNaN(t) || now - t > S99.VELHO_H * 3600000;
+    }
+    var first = list[0] || null;
+    if (first && first !== ok) {
+      if (first.ok === false) out.fail = { code: first.error || 'erro_interno', at: first.finished_at || first.requested_at, itemStatus: first.item_status || null };
+      else if (first.ok == null) {   // leitura que começou e não terminou
+        t = F().toMs(first.requested_at);
+        if (!isNaN(t) && now - t < S99.PENDENTE_S * 1000) out.pending = true;
+        else out.fail = { code: 'sem_resposta', at: first.requested_at, itemStatus: null };
+      }
+    }
+    return out;
+  }
+
   // ── administração de acessos ───────────────────────────────────────────
   function listProfiles() {
     return sb.from('profiles').select('*').order('created_at', { ascending: true }).then(function (r) { return r.error ? fail(r.error) : good({ rows: r.data || [] }); }, fail);
@@ -430,6 +548,7 @@
     loadProfile: loadProfile, redeem: redeem, loadAll: loadAll, readCache: readCache, clearCache: clearCache, patchCache: patchCache,
     createItem: createItem, updateItem: updateItem, deleteItem: deleteItem, applyEdit: applyEdit, saveSettings: saveSettings, setSettled: setSettled,
     createPurchase: createPurchase, updatePurchase: updatePurchase, deletePurchase: deletePurchase,
+    loadSaldo99: loadSaldo99, readSaldo99: readSaldo99, saldo99Summary: saldo99Summary, saldo99Text: saldo99Text, saldo99Hint: saldo99Hint, saldo99Reply: saldo99Reply,
     listProfiles: listProfiles, listInvites: listInvites, createInvite: createInvite, revokeInvite: revokeInvite, setRole: setRole
   };
 })(window.App = window.App || {});

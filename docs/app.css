@@ -267,6 +267,8 @@ h1, h2, h3, p { margin: 0; }
 .btn.cheio { width: 100%; }
 .btn.p { min-height: 40px; padding: 0 14px; font-size: 15px; }
 .btn[disabled] { opacity: .5; cursor: default; }
+a.btn { text-decoration: none; }
+.btn[aria-disabled="true"] { opacity: .5; cursor: default; }   /* "Lendo…": continua com o foco, mas não responde a toque */
 .btn-texto { background: none; border: 0; padding: 8px 4px; min-height: 44px; color: var(--azul); font-size: 16px; font-weight: 600; text-decoration: underline; }
 .fab {
   width: 44px; height: 44px; padding: 0; margin: 0 4px; display: inline-flex; align-items: center; justify-content: center;
@@ -458,3 +460,13 @@ button.melhor:active { filter: brightness(.96); }
 .capa code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; background: var(--folha-2); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--regua); }
 
 .carregando { padding: 60px 16px; text-align: center; font-size: 18px; color: var(--tinta-3); }
+
+/* ── saldo na 99Pay (só leitura, só admin) ─────────────────────────────── */
+.s99-corpo { padding: 8px 16px 4px; }
+.s99-corpo .estado { margin: 2px 0 0; }
+.s99-corpo .aviso { margin: 10px 0 0; }
+.s99-corpo .ajuda { margin-top: 6px; }
+.s99-botoes { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 2px; }
+.s99-status { margin: 0; padding: 0 16px; }
+.s99-status:not(:empty) { padding-bottom: 8px; }
+.s99-status.erro { font-weight: 600; color: var(--vermelho); }

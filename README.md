@@ -6,6 +6,7 @@ App de celular para o orçamento da casa: contas fixas, cartões, parcelados e r
 - **Quem edita e quem só lê** é definido dentro do app (Conta → Acessos), sem abrir o Supabase. As regras valem no banco (RLS), não só na tela.
 - **Atualização automática**: o app é um site (GitHub Pages) que confere versão nova toda vez que abre. Subir os arquivos no GitHub basta; ninguém reinstala nada.
 - Funciona instalado pelo Chrome (PWA, caminho recomendado) ou como app Android (APK, opcional, com tela protegida).
+- **Saldo da 99Pay (opcional, só leitura)**: um cartão no mês atual, só para o admin, mostra o saldo que o MeuPluggy informa. O valor não entra em nenhuma conta do orçamento e não existe pagamento, Pix nem transferência. Precisa do `supabase/02_saldo99.sql`, da função `supabase/functions/saldo-99pay/` e de segredos que só o dono digita no Supabase; sem isso o app funciona igual, só sem o cartão. Passo a passo e limites: `supabase/functions/saldo-99pay/LEIA-ME.md`.
 
 Este repositório é **público** (exigência do GitHub Pages gratuito). Por isso não tem nenhum dado pessoal: os valores ficam só no Supabase.
 
@@ -18,6 +19,8 @@ Este repositório é **público** (exigência do GitHub Pages gratuito). Por iss
 | `docs/` | O app em si (HTML, CSS, JS, sem build). É o que o GitHub Pages publica (branch `main`, pasta `/docs`). |
 | `docs/config.js` | **O único arquivo que liga o app ao seu Supabase** (Project URL e chave pública/publishable). |
 | `supabase/01_schema.sql` | Tabelas, regras de acesso (RLS), convites e autoverificação. Roda uma vez no SQL Editor do Supabase; pode rodar de novo sem apagar dados. |
+| `supabase/02_saldo99.sql` | Opcional (saldo da 99Pay, versão 1.4.0): diário das leituras e 2 funções do banco, só para o admin. Roda **depois** do `01`, uma vez; pode rodar de novo sem apagar leituras. |
+| `supabase/functions/saldo-99pay/` | Opcional: a Edge Function que lê o saldo no MeuPluggy/Pluggy (só leitura, 3 chamadas de uma lista fechada) e o `LEIA-ME.md` com o passo a passo. Os segredos dela (chaves da Pluggy) ficam só no Supabase. |
 | `android/` | A "casca" Android (WebView) que abre o app. Só precisa de novo APK se mexer aqui. |
 | `tests/` | Testes automáticos: cálculos, formatos, travas de segurança, do `config.js`, dos ícones e dos recursos do Android. |
 | `tools/` | `sync-launcher.js`: recalcula os hashes da política de segurança do `docs/index.html` e copia o arquivo para dentro do APK. |
@@ -26,6 +29,7 @@ Este repositório é **público** (exigência do GitHub Pages gratuito). Por iss
 ## Segurança, em resumo
 
 - **Banco**: RLS em todas as tabelas; `anon` e `service_role` sem permissão nenhuma nas tabelas e funções (isso barra o acesso direto às tabelas, mas **não** a API de usuários do Supabase: chave secreta vazada = gire a chave na hora); papéis admin / editor / leitor / bloqueado lidos do banco a cada pedido; funções `SECURITY DEFINER` com `search_path` vazio e liberadas só para usuários logados; convites de uso único com limite de tentativas (vale sob concorrência) que somem junto com o admin que os criou; trocas de papel em fila (nunca fica sem admin); valores e datas absurdos recusados; o `01_schema.sql` se autoverifica (tabelas, colunas, funções, regras, sequências) e cancela tudo se algo ficar aberto. Funções novas no schema `public` precisam de `revoke execute ... from public, anon` logo depois de criadas.
+- **Saldo da 99Pay (opcional)**: quem decide se uma leitura pode acontecer é o banco (só admin, com limites: 1 por hora ao abrir o app, 30 s entre leituras manuais, 12 por dia), e só depois disso a função chama a Pluggy, com 3 chamadas de leitura de uma lista fechada. A função não usa a chave `service_role`; ela repassa o login de quem está no app. As chaves da Pluggy ficam só nos segredos da função; o app não as vê e não guarda nada da 99Pay no aparelho. O banco guarda só saldo, hora do dado, situação da conexão e um código de erro.
 - **Senha**: mínimo de 10 caracteres, recusa as óbvias; trocar a senha exige a senha atual e encerra os outros aparelhos.
 - **App**: política de segurança de conteúdo (CSP) com hashes, `connect-src` restrito ao Supabase do projeto, anti-moldura, sem `Referer`, recusa chave secreta e URL que não seja `https://xxxx.supabase.co`.
 - **APK**: `FLAG_SECURE`, links e rede restritos ao app e ao Supabase, sem backup, só a permissão de internet.
@@ -40,6 +44,7 @@ Este repositório é **público** (exigência do GitHub Pages gratuito). Por iss
 5. Arquivo novo em `docs/js/` precisa entrar na lista `FILES` do `docs/index.html` (e aí rode o passo 4).
 6. Versão que mexe no banco (a 1.2.0 acrescentou as marcas de pago/recebido; a 1.3.0, a lista de compras e a conta corrente): rode `supabase/01_schema.sql` de novo no SQL Editor do Supabase. É seguro repetir (não apaga nada). Sem isso o app funciona, só sem a chavinha de pago/recebido, sem a aba Compras e sem a conta corrente.
 7. Não mude a lista de arquivos (`FILES`) do `docs/index.html` sem necessidade: o APK já instalado leva uma cópia dele, e se a lista crescer o APK antigo não abre a cópia da versão nova sem internet até ser reinstalado. Código novo vai dentro de arquivos que já estão na lista (a aba Compras mora em `js/sim-view.js`); o `tests/launcher.test.js` trava a lista.
+8. A 1.4.0 (saldo da 99Pay) é **opcional** e tem 3 partes além do app: `supabase/02_saldo99.sql` (SQL Editor, depois do `01`), a função `saldo-99pay` e os segredos dela (só você digita, no Supabase). Envie o app por **último**. Sem o `02` o app funciona igual, só sem o cartão; sem a função ou sem os segredos o cartão aparece com um aviso em português. A ordem, os avisos e o que foi (e não foi) testado estão em `supabase/functions/saldo-99pay/LEIA-ME.md`.
 
 ## Testes
 
@@ -47,12 +52,12 @@ Este repositório é **público** (exigência do GitHub Pages gratuito). Por iss
 node --test tests/*.test.js
 ```
 
-Precisa só do Node 18 ou mais novo. Não tem dependências. O GitHub roda o mesmo comando a cada envio (aba Actions → "Testes"), e o APK só é compilado se os testes passarem.
+Roda no Node 18 ou mais novo e não tem dependências. Os testes da função `saldo-99pay` (que é TypeScript) só rodam de verdade no Node 22.18 ou mais novo: em versões mais velhas, o arquivo `tests/saldo99-funcao.test.js` mostra a maioria deles como "pulados" (skipped) e o resto passa igual. O GitHub usa o Node 22 e roda o mesmo comando a cada envio (aba Actions → "Testes"), e o APK só é compilado se os testes passarem.
 
 ## O que é público e o que não é
 
 - Público de propósito: o código, a URL do projeto Supabase e a chave `anon`/publishable. Quem protege os dados são as regras do banco (RLS em `01_schema.sql`): sem convite, a conta criada não enxerga nada.
-- **Nunca** colocar neste repositório: a chave `service_role` / secret do Supabase, a senha do banco, o arquivo `.jks` (chave de assinatura do APK) e suas senhas, o seed com os valores da planilha, tokens do GitHub. O `.gitignore` bloqueia `.jks`, `*.keystore`, `*.apk` e `PRIVADO*`; os testes falham se encontrarem chave secreta.
+- **Nunca** colocar neste repositório: a chave `service_role` / secret do Supabase, a senha do banco, o arquivo `.jks` (chave de assinatura do APK) e suas senhas, o seed com os valores da planilha, tokens do GitHub, as chaves da Pluggy (Client ID, Client Secret, API key) e o Item ID do MeuPluggy (eles ficam só nos segredos da função, no Supabase). O `.gitignore` bloqueia `.jks`, `*.keystore`, `*.apk` e `PRIVADO*`; os testes falham se encontrarem chave secreta.
 - Se uma chave secreta chegar a ser publicada: gire-a no Supabase (Project Settings → API Keys); apagar o arquivo no GitHub não basta, porque o histórico do Git guarda a antiga.
 
 ## Dica de endereço

@@ -6,13 +6,14 @@
 (function (App) {
   'use strict';
   var d = App.dom, F = App.fmt, E = window.Engine, D = App.data, h = d.h;
-  App.version = '1.3.0';
+  App.version = '1.4.0';
   App.views = App.views || {};
 
   var state = App.state = {
     user: null, profile: null, role: null, data: null, idxFor: null, idxCache: null,
     tab: 'mes', month: F.currentMonth(), projCount: 12, projStart: null,
-    offline: false, lastLoad: 0, savedAt: 0, loading: false
+    offline: false, lastLoad: 0, savedAt: 0, loading: false,
+    saldo99: null   // leituras do saldo da 99Pay (só admin, só na memória; veja "saldo na 99Pay" abaixo)
   };
   var TABS = [
     { id: 'mes', label: 'Mês', icon: 'calendar' },
@@ -114,6 +115,74 @@
   };
   function setStale(on) { var m = document.getElementById('main'); if (m) m.classList.toggle('velho', !!on); }
 
+  // ── saldo na 99Pay (só admin) ──────────────────────────────────────────
+  // Estado só na memória (nada disso vai para o aparelho): as leituras ficam no banco e só o admin as enxerga.
+  // O app NUNCA fala com a Pluggy: quem lê é a função saldo-99pay do Supabase, e só leitura (sem pagar nem transferir).
+  var S99_ABRIR_MS = 5 * 60 * 1000;     // ao voltar para o app, não repete a conferência antes disso
+  var S99_ESPERA_MS = 30 * 1000;        // o banco só aceita outra leitura manual 30 s depois da anterior
+  var S99_HORA_MS = 60 * 60 * 1000;     // e só uma leitura automática por hora
+  function s99() {
+    return state.saldo99 || (state.saldo99 = { installed: null, rows: [], loading: false, opening: false, openedAt: 0, until: 0, msg: null, err: null });
+  }
+  function s99Draw() { if (App.views.mes && App.views.mes.saldo99Refresh) App.views.mes.saldo99Refresh(); }
+
+  // Pede uma leitura nova. 'manual' = botão "Ler agora" (mostra o resultado); 'ao_abrir' = automática (quieta: só aparece se der defeito).
+  App.saldo99Read = function (origem) {
+    var manual = origem === 'manual', S = state.saldo99, uid = state.user && state.user.id;
+    if (!uid || !S || !App.isAdmin() || S.installed !== true || S.loading) return Promise.resolve(false);
+    if (manual && S.until > Date.now()) {   // ainda dentro do intervalo: nem pergunta ao servidor
+      S.msg = { text: D.saldo99Text('intervalo', Math.ceil((S.until - Date.now()) / 1000)), erro: false };
+      s99Draw();
+      return Promise.resolve(false);
+    }
+    S.loading = true; S.msg = null; S.until = Date.now() + S99_ESPERA_MS;
+    s99Draw();
+    return D.readSaldo99(origem).then(function (r) {
+      if (!state.user || state.user.id !== uid || state.saldo99 !== S) return false;   // a pessoa saiu (ou perdeu o acesso) enquanto lia
+      S.loading = false;
+      if (r.ok) {
+        var agora = new Date().toISOString();   // já mostra o resultado; a releitura abaixo confirma com o que está no banco
+        S.rows = [{ id: null, source: origem, requested_at: agora, finished_at: agora, ok: true, balance_cents: r.cents, data_as_of: r.dataAt, item_status: r.itemStatus, error: null }].concat(S.rows);
+        S.err = null;
+        S.msg = manual ? { text: 'Saldo lido: ' + F.money(r.cents) + '.', erro: false } : null;
+      } else if (r.soft) {
+        if (r.code === 'intervalo' && r.wait) S.until = Date.now() + r.wait * 1000;
+        S.msg = manual ? { text: r.error, erro: false } : null;
+      } else if (r.code === 'sem_login') {
+        S.msg = null;                           // a sessão caiu: o app já cuida disso sozinho
+      } else {
+        S.err = { text: r.error, itemStatus: r.itemStatus };
+        S.msg = manual ? { text: 'Não consegui ler o saldo agora.', erro: true } : null;
+      }
+      s99Draw();
+      return D.loadSaldo99().then(function (lr) {
+        if (state.saldo99 !== S) return false;
+        if (lr.ok) { S.installed = lr.installed; if (lr.installed) S.rows = lr.rows; s99Draw(); }
+        return !!r.ok;
+      });
+    });
+  };
+
+  // Ao abrir o app e ao voltar para ele (só admin, só com internet): mostra a última leitura guardada e, se o banco já
+  // aceita uma leitura automática (1 hora desde a última tentativa), pede uma nova. Em silêncio: só aparece se der defeito.
+  function saldo99OnOpen() {
+    if (!state.user || !App.isAdmin() || state.offline || !state.data) return;
+    var S = s99(), uid = state.user.id, now = Date.now();
+    if (S.installed === false || S.loading || S.opening || now - S.openedAt < S99_ABRIR_MS) return;
+    S.openedAt = now; S.opening = true; S.err = null;
+    D.loadSaldo99().then(function (r) {
+      S.opening = false;
+      if (!state.user || state.user.id !== uid || state.saldo99 !== S || !App.isAdmin()) return;
+      if (!r.ok) { S.openedAt = 0; return; }   // sem rede ou sem resposta: o cartão fica como está e a próxima chance tenta de novo
+      S.installed = r.installed; S.rows = r.rows;
+      s99Draw();
+      if (!r.installed) return;
+      var t = r.rows[0] ? F.toMs(r.rows[0].requested_at) : NaN;
+      if (!isNaN(t) && Date.now() - t < S99_HORA_MS) return;
+      App.saldo99Read('ao_abrir');
+    });
+  }
+
   // Apaga deste aparelho a cópia do orçamento e do perfil (sair, ser bloqueado, sessão que caiu).
   function wipeLocal(uid) { if (uid) { D.clearCache(uid); D.store.del(profileKey(uid)); } }
 
@@ -129,7 +198,7 @@
       if (!state.user || state.user.id !== uid) return false; // a pessoa saiu enquanto carregava
       setStale(false);
       if (pr.ok && (!pr.profile || pr.profile.role === 'bloqueado')) { // perdeu o acesso com o app aberto
-        state.data = null; state.idxFor = null; state.offline = false;
+        state.data = null; state.idxFor = null; state.offline = false; state.saldo99 = null;
         d.closeAllSheets();
         afterProfile(pr.profile);
         return false;
@@ -139,6 +208,7 @@
         D.store.set(profileKey(uid), pr.profile);
         var tag = document.getElementById('papel');
         if (tag) tag.textContent = ROLE_TXT[state.role] || '';
+        if (!App.isAdmin() && state.saldo99) { state.saldo99 = null; s99Draw(); }   // deixou de ser admin: o cartão some
       }
       if (!r.ok) {
         state.offline = !!state.data;
@@ -151,6 +221,7 @@
       state.data = r.data; state.lastLoad = Date.now(); state.savedAt = Date.now();
       updateBanner();
       App.render(true);
+      saldo99OnOpen();
       return true;
     });
   };
@@ -170,7 +241,7 @@
   // opts.offline: sem internet (ou sem resposta): abre direto a cópia local, sem esperar a rede.
   App.enter = function (session, opts) {
     state.user = session.user;
-    state.data = null; state.idxFor = null; state.loadError = null; state.offline = false;
+    state.data = null; state.idxFor = null; state.loadError = null; state.offline = false; state.saldo99 = null;
     var root = App.root();
     d.clear(root);
     root.appendChild(h('div', { 'class': 'carregando', role: 'status', text: 'Entrando…' }));
@@ -199,9 +270,9 @@
   };
   function afterProfile(profile, redeemResult) {
     var root = App.root();
-    if (!profile) { wipeLocal(state.user.id); state.data = null; return App.authView.needInvite(root, redeemResult || null); }
+    if (!profile) { wipeLocal(state.user.id); state.data = null; state.saldo99 = null; return App.authView.needInvite(root, redeemResult || null); }
     state.profile = profile; state.role = profile.role;
-    if (profile.role === 'bloqueado') { wipeLocal(state.user.id); state.data = null; return App.authView.blocked(root); }
+    if (profile.role === 'bloqueado') { wipeLocal(state.user.id); state.data = null; state.saldo99 = null; return App.authView.blocked(root); }
     D.store.set(profileKey(state.user.id), profile);
     startApp(false);
   }
@@ -211,7 +282,7 @@
     var uid = state.user && state.user.id;
     return D.signOut().then(function () {
       wipeLocal(uid);
-      state.user = null; state.profile = null; state.role = null; state.data = null; resetView();
+      state.user = null; state.profile = null; state.role = null; state.data = null; state.saldo99 = null; resetView();
       d.closeAllSheets();
       App.authView.login(App.root());
     });
@@ -239,7 +310,7 @@
       if (event === 'PASSWORD_RECOVERY') { recoveryShown = true; App.authView.newPassword(root); }
       else if (event === 'SIGNED_OUT' && state.user) { // sessão caiu (revogada, vencida ou saiu em outra aba)
         wipeLocal(state.user.id);
-        state.user = null; state.profile = null; state.role = null; state.data = null; resetView(); d.closeAllSheets(); App.authView.login(root);
+        state.user = null; state.profile = null; state.role = null; state.data = null; state.saldo99 = null; resetView(); d.closeAllSheets(); App.authView.login(root);
       }
     });
     if (recovery || linkError) {

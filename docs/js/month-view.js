@@ -124,6 +124,70 @@
       h('ul', { 'class': 'livro' }, h('li', null, btn)));
   }
 
+  // ── saldo na 99Pay: só leitura, só o admin, só no mês atual ─────────────
+  // O valor vem da função "saldo-99pay" (que lê o MeuPluggy) e fica SEPARADO: não entra em entradas, saídas,
+  // resultado nem no saldo acumulado. Serve para conferir se o orçamento bate com o que a 99Pay mostra.
+  // O cartão só existe depois que o app confirmou que o banco tem a tabela (App.state.saldo99.installed === true).
+  var MEUPLUGGY = 'https://meu.pluggy.ai/';
+  function saldo99Visible() {
+    var S = App.state.saldo99;
+    return !!(S && S.installed === true && App.isAdmin() && App.state.month === F.currentMonth());
+  }
+  function saldo99Fill(sec) {
+    var S = App.state.saldo99, D = App.data, now = Date.now(), sum = D.saldo99Summary(S.rows, now);
+    var head = sec.querySelector('.secao'), body = sec.querySelector('.s99-corpo'), st = sec.querySelector('.s99-status');
+    d.clear(head); d.clear(body);
+    head.appendChild(h('h2', { text: 'Saldo na 99Pay' }));
+    head.appendChild(h('span', { 'class': 'total' + (sum.has && sum.cents < 0 ? ' neg-txt' : ''), text: sum.has ? F.money(sum.cents) : '—' }));
+
+    var lendo = !!S.loading;
+    if (sum.has) {
+      var quando = F.whenShort(sum.dataAt) + ' (' + F.agoText(sum.dataAt, now) + ')';
+      body.appendChild(sum.old
+        ? h('span', { 'class': 'estado low' }, d.statusIcon('low'), 'Desatualizado: dado de ' + quando)
+        : h('span', { 'class': 'estado ok' }, d.statusIcon('ok'), 'Dado de ' + quando));
+      body.appendChild(h('p', { 'class': 'ajuda', text: 'Lido ' + F.agoText(sum.readAt, now) + ' (' + F.whenShort(sum.readAt) + ')' }));
+    } else {
+      body.appendChild(h('p', { 'class': 'ajuda', text: lendo || sum.pending ? 'Lendo o saldo…' : 'Ainda não li o saldo da 99Pay.' }));
+    }
+
+    // falha: a desta sessão (já em português) ou a da última tentativa guardada no banco. O último saldo bom continua na tela.
+    var fail = S.err || (sum.fail ? { text: D.saldo99Text(sum.fail.code), itemStatus: sum.fail.itemStatus } : null);
+    if (fail && !lendo) body.appendChild(h('div', { 'class': 'aviso' }, h('b', { text: 'A última leitura falhou. ' }), fail.text, sum.has ? ' Mostrando o último saldo lido com sucesso.' : ''));
+    var hint = D.saldo99Hint(fail ? fail.itemStatus : sum.itemStatus);
+    if (hint) body.appendChild(h('p', { 'class': 'ajuda', text: hint }));
+
+    body.appendChild(h('div', { 'class': 's99-botoes' },
+      h('button', { 'class': 'btn p', type: 'button', 'data-s99': 'ler', 'aria-disabled': lendo ? 'true' : null, on: { click: function () { App.saldo99Read('manual'); } } },
+        d.icon('refresh', 'p'), lendo ? 'Lendo…' : 'Ler agora'),
+      h('a', { 'class': 'btn p', href: MEUPLUGGY, target: '_blank', rel: 'noopener noreferrer', 'data-s99': 'abrir' },
+        'Abrir MeuPluggy', h('span', { 'class': 'sr', text: ' (abre no navegador)' }))));
+    body.appendChild(h('p', { 'class': 'ajuda', text: 'Só leitura: este valor não entra nas contas do orçamento. Se não bater com o app da 99Pay, toque em Abrir MeuPluggy, use Atualizar lá, espere uns minutos e volte aqui em Ler agora.' }));
+
+    // linha de status: é sempre o MESMO elemento (região de aviso), para o leitor de tela anunciar cada mudança
+    st.textContent = lendo ? 'Lendo o saldo…' : (S.msg ? S.msg.text : '');
+    st.className = 'ajuda s99-status' + (!lendo && S.msg && S.msg.erro ? ' erro' : '');
+  }
+  function saldo99Card() {
+    if (!saldo99Visible()) return null;
+    var sec = h('section', { 'aria-label': 'Saldo na 99Pay', 'data-saldo99': '1' },
+      h('div', { 'class': 'secao' }), h('div', { 'class': 's99-corpo' }), h('p', { 'class': 'ajuda s99-status', role: 'status' }));
+    saldo99Fill(sec);
+    return sec;
+  }
+  // Redesenha só o cartão que já está na tela (a lista não pula). Se ele devia aparecer e ainda não está, redesenha a aba.
+  function saldo99Refresh() {
+    var sec = document.querySelector('[data-saldo99]');
+    if (!sec) { if (App.state.tab === 'mes' && saldo99Visible()) App.render(true); return; }
+    if (!saldo99Visible()) { sec.parentNode.removeChild(sec); return; }
+    var foco = sec.contains(document.activeElement) ? document.activeElement.getAttribute('data-s99') : null;
+    saldo99Fill(sec);
+    if (foco === 'ler' || foco === 'abrir') {
+      var el = sec.querySelector('[data-s99="' + foco + '"]');
+      if (el) { try { el.focus({ preventScroll: true }); } catch (e) {} }
+    }
+  }
+
   // Sob "Entradas"/"Saídas" do resumo: o que ainda falta (só aparece depois da primeira marca)
   function faltaLine(b, kind) {
     if (!b.feitas) return null;
@@ -192,6 +256,8 @@
 
     // listas
     if (v.carry) main.appendChild(carrySection(v.carry, month));
+    try { var s99 = saldo99Card(); if (s99) main.appendChild(s99); }   // um defeito neste cartão nunca derruba a aba
+    catch (e) { if (window.console) console.error(e); }
     main.appendChild(section('Saídas', 'saida', v.saidas, v.totalSaidas, month, 'Nenhuma saída neste mês.', ctx, v.baixa.saidas));
     main.appendChild(section('Entradas', 'entrada', v.entradas, v.totalEntradas, month, 'Nenhuma entrada neste mês.', ctx, v.baixa.entradas));
 
@@ -224,5 +290,5 @@
     }
   }
 
-  App.views.mes = { render: render };
+  App.views.mes = { render: render, saldo99Refresh: saldo99Refresh };
 })(window.App = window.App || {});
