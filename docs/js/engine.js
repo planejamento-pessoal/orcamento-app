@@ -25,11 +25,23 @@
   function diffMonths(a, b) { return mi(b) - mi(a); }
   function toDbDate(m) { return normMonth(m) + '-01'; }
   function cents(x) { return Math.round(Number(x) * 100); }
+  // Instante (milissegundos) de um horário do Supabase ("2026-11-19T23:51:03.430498+00:00"); null se não der para ler.
+  // O Supabase manda 6 casas de fração e alguns navegadores só aceitam 3: cortamos o excesso antes de ler.
+  function toMs(v) {
+    if (typeof v === 'number') return isFinite(v) ? v : null;
+    if (typeof v !== 'string' || v === '') return null;
+    var s = v.trim().replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1');
+    if (s.indexOf('T') > 0) s = s.replace(/([+-]\d{2})$/, '$1:00');
+    var t = new Date(s).getTime();
+    return isNaN(t) ? null : t;
+  }
 
   // ── índice dos dados ───────────────────────────────────────────────────
-  // data = { items, rates, entries, settled?, settings? } (formato das tabelas do Supabase).
-  // settled = marcas "pago/recebido" ({ item_id, month }); é só status: nenhuma conta usa.
+  // data = { items, rates, entries, settled?, settings?, saldoReal? } (formato das tabelas do Supabase).
+  // settled = marcas "pago/recebido" ({ item_id, month, settled_at? }). Sem saldoReal a marca é só status: nenhuma
+  //   conta usa. settled_at (a hora da marca) só importa com saldoReal (veja "saldo real da conta", abaixo).
   // settings ({ balance_start_month, opening_balance }) só é preciso para a "conta corrente" (abaixo).
+  // saldoReal ({ month "AAAA-MM", cents, asOf }) é o saldo que o banco informou (a leitura da 99Pay), só na memória.
   //
   // CONTA CORRENTE ("carry_over"): um item de entrada que não repete (o que guarda o dinheiro da conta) puxa, todo mês depois
   // do mês inicial do saldo, o que sobrou do mês anterior = o saldo acumulado no fim dele.
@@ -40,7 +52,7 @@
   //     no começo do mês, e os meses seguintes partem dele (source 'real').
   // No mês inicial e antes dele o item é um item comum (o valor dele é o dinheiro que já estava na conta).
   function buildIndex(data) {
-    var entries = new Map(), ratesBy = new Map(), settled = new Set(), i;
+    var entries = new Map(), ratesBy = new Map(), settled = new Set(), settledAt = new Map(), i;
     var es = data.entries || [], rs = data.rates || [], ss = data.settled || [];
     for (i = 0; i < es.length; i++) entries.set(es[i].item_id + '|' + mi(es[i].month), cents(es[i].amount));
     for (i = 0; i < rs.length; i++) {
@@ -49,16 +61,22 @@
       list.push({ from: mi(rs[i].from_month), cents: cents(rs[i].amount) });
     }
     ratesBy.forEach(function (l) { l.sort(function (a, b) { return a.from - b.from; }); });
-    for (i = 0; i < ss.length; i++) settled.add(ss[i].item_id + '|' + mi(ss[i].month));
+    for (i = 0; i < ss.length; i++) {
+      var sk = ss[i].item_id + '|' + mi(ss[i].month);
+      settled.add(sk);
+      settledAt.set(sk, toMs(ss[i].settled_at));     // hora em que a marca foi feita; null = marca antiga, sem hora
+    }
     var items = data.items || [], st = data.settings, carry = null;
     for (i = 0; i < items.length && !carry; i++) if (isCarryItem(items[i])) carry = items[i];
-    return {
-      items: items, entries: entries, ratesBy: ratesBy, settled: settled, cache: new Map(),
+    var idx = {
+      items: items, entries: entries, ratesBy: ratesBy, settled: settled, settledAt: settledAt, cache: new Map(),
       carry: carry,
       start: st && st.balance_start_month ? mi(st.balance_start_month) : null,
       opening: st ? cents(st.opening_balance || 0) : 0,
-      bal: new Map(), variants: new Map()
+      bal: new Map(), variants: new Map(), sr: data.saldoReal || null, live: null
     };
+    idx.live = liveFrom(idx, idx.sr);
+    return idx;
   }
 
   // Item que puxa a sobra do mês anterior: entrada que não repete e ligada (simulação nunca).
@@ -79,6 +97,65 @@
     return idx.entries.has(k) ? idx.entries.get(k) : null;
   }
 
+  // ── saldo real da conta (a leitura da 99Pay) ───────────────────────────
+  // Só no mês da leitura (o mês atual). O saldo que o banco informou (B, lido em asOf) já inclui tudo o que foi pago ou
+  // recebido até asOf. Então a sobra prevista do mês é  B + o que ainda falta receber − o que ainda falta pagar:
+  // não precisa digitar o saldo, e os juros e o cashback que o banco soma sozinho já vêm dentro de B.
+  //   • "já está em B" = item marcado como pago/recebido E a marca foi feita até asOf (marca antiga, sem hora, também).
+  //   • marca feita DEPOIS de asOf ainda não está em B: o item segue valendo como "a pagar/receber" até a próxima
+  //     leitura (senão a sobra pularia no instante em que a marca é feita, antes de o banco atualizar).
+  //   • a linha da conta corrente fica de fora das somas (ela é o próprio B).
+  // Sem leitura, sem conta corrente definida, ou fora do mês da leitura, nada disto existe: as contas são as de sempre.
+  function liveFrom(idx, sr) {
+    if (!sr || idx.carry === null || idx.start === null) return null;
+    if (typeof sr.month !== 'string' || !/^\d{4}-\d{2}/.test(sr.month)) return null;
+    if (typeof sr.cents !== 'number' || !isFinite(sr.cents) || Math.floor(sr.cents) !== sr.cents) return null;
+    var asOf = toMs(sr.asOf);
+    if (asOf === null) return null;
+    var m = mi(sr.month);
+    if (m < idx.start) return null;
+    return { m: m, cents: sr.cents, asOf: asOf };
+  }
+  // O mês m (inteiro) é o da leitura da 99Pay?
+  function liveAt(idx, m) { return idx.live !== null && idx.live.m === m; }
+  // Este mês recomeça a conta num valor "real"? (saldo real digitado na conta corrente, ou a leitura da 99Pay)
+  function restartsAt(idx, m) { return liveAt(idx, m) || overrideAt(idx, m) !== null; }
+
+  // O que já foi e o que falta no mês da leitura (centavos), sem a linha da conta corrente. Vale para itens comuns e
+  // para simulações (as simulações nunca são marcadas, então sempre faltam). feito + falta = totais do mês.
+  function liveParts(idx, m) {
+    var key = 'L' + m, p = idx.cache.get(key);
+    if (p) return p;
+    var asOf = idx.live.asOf;
+    p = {
+      receber: 0, pagar: 0, nReceber: 0, nPagar: 0,                // ainda não está no saldo (inclui as "tarde")
+      feitoEnt: 0, feitoSai: 0, nFeitoEnt: 0, nFeitoSai: 0,        // já está no saldo
+      tardeEnt: 0, tardeSai: 0, nTardeEnt: 0, nTardeSai: 0,        // marcadas depois da leitura (ainda não estão no saldo)
+      res: 0
+    };
+    for (var i = 0; i < idx.items.length; i++) {
+      var it = idx.items[i];
+      if (it === idx.carry) continue;
+      var c = amountAt(idx, it, m).cents;
+      if (c === 0) continue;
+      var ent = it.kind === 'entrada';
+      var tick = isSettled(idx, it, m);
+      var t = tick ? idx.settledAt.get(it.id + '|' + m) : null;
+      var done = tick && (t === null || t <= asOf);
+      if (done) {
+        if (ent) { p.feitoEnt += c; p.nFeitoEnt++; } else { p.feitoSai += c; p.nFeitoSai++; }
+        continue;
+      }
+      if (ent) { p.receber += c; p.nReceber++; } else { p.pagar += c; p.nPagar++; }
+      if (tick) {
+        if (ent) { p.tardeEnt += c; p.nTardeEnt++; } else { p.tardeSai += c; p.nTardeSai++; }
+      }
+    }
+    p.res = p.receber - p.pagar;
+    idx.cache.set(key, p);
+    return p;
+  }
+
   // O mesmo índice, para outras configurações (mês inicial e saldo de abertura). Só muda de verdade se
   // alguém pedir uma linha do tempo com configurações diferentes das que montaram o índice (testes).
   function withSettings(idx, settings) {
@@ -88,6 +165,7 @@
     var key = start + '|' + opening, v = idx.variants.get(key);
     if (!v) {
       v = Object.assign({}, idx, { start: start, opening: opening, cache: new Map(), bal: new Map(), variants: new Map() });
+      v.live = liveFrom(v, idx.sr);
       idx.variants.set(key, v);
     }
     return v;
@@ -96,6 +174,7 @@
   // Saldo acumulado no fim do mês m (inteiro); null antes do mês inicial.
   //   mês inicial:  saldo de abertura + resultado do mês
   //   depois:       (saldo do mês anterior, ou o saldo real digitado na conta corrente) + resultado do mês
+  //   mês da leitura da 99Pay: o saldo que o banco informou + o que ainda falta receber − o que ainda falta pagar
   // O resultado do mês (totalsAt) não inclui a sobra mostrada na conta corrente: ela já está no saldo anterior.
   function balanceEnd(idx, m) {
     var st = idx.start;
@@ -104,9 +183,13 @@
     if (memo.has(m)) return memo.get(m);
     while (k > st && !memo.has(k - 1)) k--;
     for (; k <= m; k++) {
-      var res = totalsAt(idx, k).res, bal;
-      if (k === st) bal = idx.opening + res;
-      else { var ov = overrideAt(idx, k); bal = (ov === null ? memo.get(k - 1) : ov) + res; }
+      var bal;
+      if (liveAt(idx, k)) bal = idx.live.cents + liveParts(idx, k).res;
+      else {
+        var res = totalsAt(idx, k).res;
+        if (k === st) bal = idx.opening + res;
+        else { var ov = overrideAt(idx, k); bal = (ov === null ? memo.get(k - 1) : ov) + res; }
+      }
       memo.set(k, bal);
     }
     return memo.get(m);
@@ -165,10 +248,10 @@
   function totalsAt(idx, m) {
     var t = idx.cache.get(m);
     if (t) return t;
-    var ent = 0, sai = 0, skip = carryActive(idx, m) ? idx.carry : null;
+    var ent = 0, sai = 0, skip = (carryActive(idx, m) || liveAt(idx, m)) ? idx.carry : null;
     for (var i = 0; i < idx.items.length; i++) {
       var it = idx.items[i];
-      if (it === skip) continue;             // a sobra do mês anterior não é entrada do mês (o saldo já a carrega)
+      if (it === skip) continue;             // a sobra do mês anterior (ou o saldo lido da 99Pay) não é entrada do mês
       var c = amountAt(idx, it, m).cents;
       if (it.kind === 'entrada') ent += c; else sai += c;
     }
@@ -188,11 +271,22 @@
   //    anterior), prev (esse mês, "AAAA-MM"), real (há saldo real lançado) }. Fica FORA de entradas, de
   //    vazias e dos totais: o saldo acumulado já carrega essa sobra (somar de novo contaria em dobro).
   //    saldo no fim do mês = cents + resultado.
+  //  - live: só no mês da leitura da 99Pay (nos outros meses é null). Aí o carry mostra o saldo que o banco informou
+  //    (cents, live: true, real: false) e "live" traz as contas deste modo:
+  //      cents (o saldo lido), asOf (instante da leitura, em ms),
+  //      receber / pagar (o que ainda falta receber / pagar, em centavos) e nReceber / nPagar (quantas linhas),
+  //      sobra (cents + receber − pagar = o saldo previsto para o fim do mês),
+  //      feito: { entradas, saidas, nEntradas, nSaidas }  (o que já está dentro do saldo lido),
+  //      tarde: { entradas, saidas, nEntradas, nSaidas }  (marcado depois da leitura: segue em receber/pagar até a próxima).
   function monthView(idx, month) {
-    var m = mi(month), lines = [], i, carry = null;
+    var m = mi(month), lines = [], i, carry = null, lv = liveAt(idx, m) ? idx.live : null;
     for (i = 0; i < idx.items.length; i++) {
       var it = idx.items[i];
       if (it.sim) continue;
+      if (lv && isCarry(idx, it)) {
+        carry = { item: it, cents: lv.cents, auto: balanceEnd(idx, m - 1), prev: ms(m - 1), real: false, live: true };
+        continue;
+      }
       if (carryActive(idx, m) && isCarry(idx, it)) {
         var ca = amountAt(idx, it, m);
         carry = { item: it, cents: ca.cents, auto: balanceEnd(idx, m - 1), prev: ms(m - 1), real: ca.source === 'real' };
@@ -217,7 +311,7 @@
       return b;
     }
     var t = totalsAt(idx, m), ent = pick('entrada', true), sai = pick('saida', true);
-    return {
+    var out = {
       month: normMonth(month),
       entradas: ent, saidas: sai,
       vazias: { entradas: pick('entrada', false), saidas: pick('saida', false) },
@@ -225,6 +319,17 @@
       baixa: { entradas: baixaOf(ent), saidas: baixaOf(sai) },
       carry: carry
     };
+    if (lv) {
+      var lp = liveParts(idx, m);
+      out.live = {
+        cents: lv.cents, asOf: lv.asOf,
+        receber: lp.receber, pagar: lp.pagar, nReceber: lp.nReceber, nPagar: lp.nPagar,
+        sobra: lv.cents + lp.res,
+        feito: { entradas: lp.feitoEnt, saidas: lp.feitoSai, nEntradas: lp.nFeitoEnt, nSaidas: lp.nFeitoSai },
+        tarde: { entradas: lp.tardeEnt, saidas: lp.tardeSai, nEntradas: lp.nTardeEnt, nSaidas: lp.nTardeSai }
+      };
+    } else out.live = null;
+    return out;
   }
 
   // A conta corrente num mês: { auto (centavos), prev, real, cents } ou null (outro item, ou mês sem "puxar").
@@ -238,12 +343,26 @@
   // ── linha do tempo com saldo acumulado ─────────────────────────────────
   // settings = { balance_start_month, opening_balance }
   // Antes do mês inicial o saldo é null (a planilha também só acumula a partir dele).
+  // Só no mês da leitura da 99Pay a linha traz também `live` (nos outros meses a chave nem existe):
+  //   { cents (o saldo lido), asOf (ms), receber, pagar, variacao }
+  //   variacao = saldo do fim do mês − o saldo de partida (o saldo do fim do mês anterior; no mês inicial, zero, porque
+  //   o saldo lido já traz tudo o que havia na conta). É "quanto o saldo muda neste mês" e é o que a aba Projeção mostra
+  //   como resultado desse mês. `resultado` segue sendo entradas − saídas das linhas do mês (sem a conta), igual ao resumo
+  //   do mês: com a leitura ele não parte do saldo lido, então não fecha com o saldo, e por isso não é o que se mostra ali.
   function timeline(idx, settings, fromMonth, count) {
     idx = withSettings(idx, settings);
-    var from = mi(fromMonth), m, k, out = [], t;
+    var from = mi(fromMonth), m, k, out = [], t, row, lp;
     for (k = 0; k < count; k++) {
       m = from + k; t = totalsAt(idx, m);
-      out.push({ month: ms(m), entradas: t.ent, saidas: t.sai, resultado: t.res, saldo: balanceEnd(idx, m) });
+      row = { month: ms(m), entradas: t.ent, saidas: t.sai, resultado: t.res, saldo: balanceEnd(idx, m) };
+      if (liveAt(idx, m)) {
+        lp = liveParts(idx, m);
+        row.live = {
+          cents: idx.live.cents, asOf: idx.live.asOf, receber: lp.receber, pagar: lp.pagar,
+          variacao: row.saldo - (m === idx.start ? 0 : balanceEnd(idx, m - 1))
+        };
+      }
+      out.push(row);
     }
     return out;
   }
@@ -392,7 +511,7 @@
       items.push(ex.item);
       ex.rates.forEach(function (r) { rates.push(r); });
     });
-    return { items: items, rates: rates, entries: data.entries, settled: data.settled, settings: data.settings };
+    return { items: items, rates: rates, entries: data.entries, settled: data.settled, settings: data.settings, saldoReal: data.saldoReal };
   }
 
 
@@ -426,12 +545,12 @@
 
   // Menor saldo da janela [k, k+h) depois de gastar `valor` no mês tl[k] (tl = linha do tempo SEM a compra,
   // idx = o índice dela, já com as configurações). A compra baixa o saldo de todos os meses seguintes, menos os
-  // que vêm depois de um saldo real lançado na conta corrente: esse saldo recomeça a conta e apaga o efeito da
-  // compra (é o que a aba Simular mostra). Sem saldo real lançado mais à frente, é o menor saldo menos `valor`.
+  // que vêm depois de um saldo real lançado na conta corrente (ou do saldo lido da 99Pay): esse saldo recomeça a conta
+  // e apaga o efeito da compra (é o que a aba Simular mostra). Sem isso mais à frente, é o menor saldo menos `valor`.
   function worstAfterSpend(idx, tl, k, h, valor) {
     var worst = null, worstMonth = null, erased = false;
     for (var j = k; j < k + h && j < tl.length; j++) {
-      if (j > k && overrideAt(idx, mi(tl[j].month)) !== null) erased = true;
+      if (j > k && restartsAt(idx, mi(tl[j].month))) erased = true;
       var sd = tl[j].saldo;
       if (sd == null) continue;
       var v = erased ? sd : sd - valor;
@@ -549,6 +668,8 @@
     mi: mi, ms: ms, normMonth: normMonth, addMonths: addMonths, diffMonths: diffMonths, toDbDate: toDbDate, cents: cents,
     buildIndex: buildIndex, inRange: inRange, projectedAt: projectedAt, amountAt: amountAt, installmentAt: installmentAt, isSettled: isSettled,
     isCarry: isCarry, isCarryItem: isCarryItem, isCarryMonth: isCarryMonth, carryAt: carryAt,
+    isLive: function (idx, month) { return liveAt(idx, mi(month)); },
+    liveOf: function (idx) { return idx.live ? { month: ms(idx.live.m), cents: idx.live.cents, asOf: idx.live.asOf } : null; },
     monthView: monthView, totalsAt: totalsAt, timeline: timeline, statusOf: statusOf, summarize: summarize,
     planEdit: planEdit, planSettle: planSettle, planCarryAuto: planCarryAuto, planCarry: planCarry, newOps: newOps,
     splitInstallments: splitInstallments, expandSpec: expandSpec, withSims: withSims,

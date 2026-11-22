@@ -2,7 +2,44 @@
 
 As mensagens do app que dizem "veja o LEIA-ME" falando do saldo da 99Pay se referem a este guia.
 
+**(A situação abaixo é de 16/11/2026, quando a versão 1.4.0 foi preparada. Para a versão 1.5.0, que passa a usar o saldo lido nas contas do mês atual, veja o item 0 logo abaixo.)**
+
 **Situação em 16/11/2026:** o código está pronto e foi testado no meu ambiente de teste (simulado). **O banco (passo 1) e a função `saldo-99pay` (passo 2) já estão aplicados no Supabase "orcamento"**, por mim, com a sua autorização de 15/11 às 20:54. **Faltam duas coisas, as duas suas:** os segredos (passo 3, só você digita) e subir o app 1.4.0 no GitHub (passo 4: eu não tenho acesso ao seu GitHub, então os arquivos vão num pacote e você sobe, só depois do passo 3). Até lá o app que está no ar continua na versão 1.3.0 e não mostra o cartão. Esta função ainda não falou com a Pluggy (sem os segredos ela não consegue). **Ainda ninguém viu esta leitura funcionar de verdade**: a primeira leitura real vai ser o primeiro teste de verdade (item 9 explica o que falta provar).
+
+---
+
+## 0. Versão 1.5.0: o saldo lido passa a valer nas contas do mês atual (opcional)
+
+**Para que serve.** Na 1.4.0 o saldo da 99Pay só aparecia no cartão, e para o orçamento bater com o banco era preciso digitar o saldo real na conta corrente (o item da 99Pay) sempre que os juros ou outro movimento do banco mudavam o valor. Na 1.5.0 o app faz essa conta sozinho, **no mês atual e só para o admin**:
+
+> **sobra prevista no fim do mês = saldo lido da 99Pay + o que ainda falta receber − o que ainda falta pagar**
+
+- O saldo lido **já inclui** tudo o que o banco processou até a hora do dado (juros e cashback, por exemplo, entram sozinhos). Por isso o que você marcou como pago/recebido **até a hora do dado** não é contado de novo.
+- O que você marcou **depois** da hora do dado ainda não está no saldo lido: continua em "A pagar"/"A receber" até a leitura seguinte, e a tela avisa ("Marcado depois dessa leitura…"). É isso que impede a sobra de "pular" no instante em que você marca um item antes de o MeuPluggy atualizar (ele atualiza mais ou menos a cada 24 horas).
+- Os **meses seguintes** partem da sobra prevista deste mês. Os meses anteriores não mudam.
+- A aba **Projeção** acompanha: na linha do mês atual, o "Resultado" é **quanto o saldo muda no mês** (saldo previsto menos o saldo do fim do mês anterior; se o mês atual for o mês inicial do saldo, o saldo de partida é zero e o resultado é a própria sobra prevista), e o balão do gráfico mostra saldo na 99Pay, a receber, a pagar e o resultado. Uma nota embaixo da tabela diz de onde vem o número. Nos outros meses nada muda.
+- O valor que você digitar na conta corrente **neste mês** fica guardado, mas não é usado enquanto houver leitura boa deste mês.
+
+**O que precisa (nesta ordem):**
+1. `supabase/03_marcas_com_hora.sql` no SQL Editor do Supabase (uma vez). Só **acrescenta** a coluna `settled_at` (hora, do servidor) nas marcas de pago/recebido; não muda nenhuma marca, valor, permissão nem regra. As marcas antigas ficam sem hora e o app as trata como "já está no saldo". O arquivo se confere sozinho e cancela tudo se algo sair do combinado.
+2. No app: abra o item da 99Pay (Mais opções) e ligue **"Puxar a sobra do mês anterior"**. (Sem a conta corrente definida o app não sabe qual item é o saldo da conta.)
+3. Envie o app 1.5.0 por último (README, item 9).
+
+**Quando as contas voltam a ser as de antes** (nada quebra, o cartão só explica por quê): sem o `03` no banco; sem conta corrente definida; sem leitura boa **deste mês** (virou o mês e ainda não houve leitura nova); para quem não é admin; e se o item da 99Pay deixar de ser a conta corrente.
+
+**Cuidados (leia):**
+- **Marcar como pago continua sendo manual.** A Pluggy não me entregou as movimentações (o pedido de transações voltou erro 410 nos meus testes), então o app não sabe sozinho o que você pagou. O que você já pagou e **não marcou** sai do saldo do banco **e** continua em "A pagar": a sobra prevista fica menor que a real. Marque o que pagar.
+- Marcas **antigas** (sem hora) contam como "já está no saldo". Se você marcou ontem uma conta cujo pagamento o banco ainda não processou, ela some de "A pagar" e a sobra fica maior que a real até o banco processar.
+- Só entram as linhas **do mês atual**. Uma conta de um mês anterior que continua sem pagar não está no saldo do banco **nem** em "A pagar" deste mês: pague, ou lance o valor no mês atual, para a sobra prevista não ficar maior que a real.
+- No primeiro dia de cada mês, até o MeuPluggy atualizar o saldo (cerca de 24 horas), a leitura ainda é do mês anterior e não vale: o app mostra as contas de antes e o cartão avisa. Quando chega a primeira leitura do mês, as contas passam a partir dela.
+- Quem **não é admin** (editor, leitor) não enxerga as leituras e continua vendo as contas de antes, então os números do celular dele podem ser diferentes dos seus enquanto você usar a leitura.
+- O saldo lido pode ter cerca de 24 horas de atraso (é o ritmo de atualização do MeuPluggy). Com mais de 30 horas o app mostra "Desatualizado" e segue usando o último saldo do mês.
+- O teste gratuito da Pluggy termina em 28/11/2026; **não consegui confirmar** que a leitura continua depois disso. Se parar, as contas voltam às de antes assim que o mês virar, e no mês atual valem o último saldo lido (com o aviso "Desatualizado").
+- O saldo lido vive só na memória do app do admin: **não** é guardado na cópia do aparelho nem em nenhum outro lugar além do diário `pay99_balance_reads`.
+
+**Voltar atrás:** suba de novo os arquivos da 1.4.0 (pacote `orcamento-1.4.0-VOLTAR.zip`). A coluna nova não atrapalha a versão antiga e não precisa ser desfeita. Para desligar só o uso nas contas, mantendo a 1.5.0: desligue "Puxar a sobra do mês anterior" no item da 99Pay.
+
+**O que foi testado (no meu ambiente de teste, com dados inventados):** os cálculos (inclusive 400 casos sorteados conferidos contra um modelo independente e dezenas de defeitos plantados de propósito, todos pegos, exceto um que não muda o resultado do programa); a leitura e o plano B sem a coluna; o `03` num Postgres 16 de verdade; e a tela num Chromium de verdade, com a função e o banco de teste (resumo novo, marcar sem a sobra pular, mês seguinte, aba Projeção, mês atual igual ao mês inicial, celular estreito, tema escuro, quem não é admin). **Não foi testado:** no Android (nem no APK nem no Chrome do celular), no Supabase de verdade (o `03` só foi aplicado no banco de teste) e uma leitura real depois de 28/11.
 
 ---
 
@@ -16,7 +53,7 @@ Um cartão **"Saldo na 99Pay"** no mês atual, **só para o admin** (você). Edi
 - **Abrir MeuPluggy**: abre o MeuPluggy fora do app, para você tocar em Atualizar lá.
 - Dado com mais de 30 horas fica marcado como **Desatualizado**. Se a última leitura falhar, o cartão diz o motivo em português e continua mostrando o último saldo que deu certo.
 
-O valor **só informa**: não entra em nenhuma conta do orçamento. Saldo inicial, conta corrente, lançamentos, fechamentos e "pago" não são tocados. Não existe pagamento, Pix nem transferência em lugar nenhum do código.
+Na versão 1.4.0 o valor **só informa**: não entra em nenhuma conta do orçamento (e é assim até você rodar o `03` e ligar a conta corrente; veja o item 0). Em qualquer versão, saldo inicial, conta corrente, lançamentos, fechamentos e "pago" **nunca são alterados** por esta leitura: o app só usa o valor para calcular a sobra prevista do mês atual na tela, sem gravar nada. Não existe pagamento, Pix nem transferência em lugar nenhum do código.
 
 ## 2. O que você pediu e como ficou
 
@@ -173,6 +210,7 @@ Qualquer outro código que apareça: me mande só o texto.
 
 ## 10. Desfazer
 
+- **Só a 1.5.0** (voltar para a 1.4.0): suba de volta os arquivos do `orcamento-1.4.0-VOLTAR.zip`. A coluna `settled_at` fica no banco sem atrapalhar.
 - **O app inteiro**: suba de volta os 5 arquivos do `orcamento-1.3.0-VOLTAR.zip` (mesmas pastas do passo 4, Parte A). O cartão some em todos os celulares na próxima abertura.
 - **Só a leitura, mantendo o app 1.4.0**: apague a função (Supabase → Edge Functions → `saldo-99pay` → Delete) e os segredos (Edge Functions → Secrets). O cartão passa a dizer que a função não está instalada.
 - **O banco** (só se quiser mesmo apagar o diário; o app funciona normal sem ele, e o cartão some). No SQL Editor:
@@ -191,5 +229,5 @@ drop function if exists public.pay99_finish_read(bigint, boolean, bigint, timest
 - Só leitura. Nenhum pagamento, Pix ou transferência, agora ou depois.
 - Senha de banco, PIN, código de acesso e cookies de sessão **nunca** são pedidos nem guardados. Chaves só nos segredos do Supabase, digitadas por você.
 - Custo zero: se qualquer tela pedir cartão de crédito ou plano pago, pare e me avise.
-- O saldo da 99Pay aparece separado; nunca altera saldo inicial, conta corrente, lançamentos, fechamentos ou quitados.
+- O saldo da 99Pay nunca altera saldo inicial, conta corrente, lançamentos, fechamentos ou quitados: desde a 1.5.0 ele só serve de ponto de partida do cálculo do mês atual **na tela**, e nada dele é gravado nas tabelas do orçamento.
 - Este repositório é público: este guia não tem (e nenhum arquivo daqui pode ter) chave, Item ID, saldo ou dado pessoal.

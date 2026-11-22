@@ -70,8 +70,10 @@
       chartApi = App.chart.line(host, {
         series: series, minCents: minC, ariaLabel: 'Saldo acumulado de ' + F.monthShort(tl[0].month) + ' a ' + F.monthShort(tl[tl.length - 1].month),
         extras: function (i) {
-          var p = tl[i], stt = E.statusOf(p.saldo, minC);
-          return [['Entradas', F.money(p.entradas)], ['Saídas', F.money(p.saidas)], ['Resultado', F.money(p.resultado, { sign: true })], ['Situação', stt ? d.STATUS_TXT[stt] : 'Antes do saldo inicial']];
+          var p = tl[i], stt = E.statusOf(p.saldo, minC), sit = ['Situação', stt ? d.STATUS_TXT[stt] : 'Antes do saldo inicial'];
+          // mês com o saldo lido da 99Pay: o saldo parte dele, então é isso que explica o número (e não "entradas − saídas")
+          if (p.live) return [['Saldo na 99Pay', F.money(p.live.cents)], ['A receber', F.money(p.live.receber)], ['A pagar', F.money(p.live.pagar)], ['Resultado', F.money(p.live.variacao, { sign: true })], sit];
+          return [['Entradas', F.money(p.entradas)], ['Saídas', F.money(p.saidas)], ['Resultado', F.money(p.resultado, { sign: true })], sit];
         },
         onPick: function (i) { rows.forEach(function (r, k) { r.classList.toggle('sel', k === i); }); }
       });
@@ -84,12 +86,14 @@
     var tbody = h('tbody');
     tl.forEach(function (p) {
       var stt = E.statusOf(p.saldo, minC);
-      var tr = h('tr', { 'class': 'btn-linha', tabindex: '0', 'aria-label': F.monthLong(p.month) + ': resultado ' + F.money(p.resultado, { sign: true }) + ', saldo ' + (p.saldo == null ? 'não calculado' : F.money(p.saldo)) + (stt ? ', ' + d.STATUS_TXT[stt] : ''), on: {
+      // no mês com o saldo lido da 99Pay o resultado é quanto o saldo muda no mês (fecha com a coluna Saldo)
+      var res = p.live ? p.live.variacao : p.resultado;
+      var tr = h('tr', { 'class': 'btn-linha', tabindex: '0', 'aria-label': F.monthLong(p.month) + ': resultado ' + F.money(res, { sign: true }) + ', saldo ' + (p.saldo == null ? 'não calculado' : F.money(p.saldo)) + (stt ? ', ' + d.STATUS_TXT[stt] : ''), on: {
         click: function () { App.go('mes', { month: p.month }); },
         keydown: function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); App.go('mes', { month: p.month }); } }
       } },
         h('td', null, h('div', { 'class': 'cel', text: F.monthShort(p.month) })),
-        h('td', null, h('div', { 'class': 'cel' + (p.resultado < 0 ? ' neg-txt' : ''), text: F.money(p.resultado, { sign: true, bare: true }) })),
+        h('td', null, h('div', { 'class': 'cel' + (res < 0 ? ' neg-txt' : ''), text: F.money(res, { sign: true, bare: true }) })),
         h('td', null, h('div', { 'class': 'cel' + (stt === 'neg' ? ' neg-txt' : '') },
           stt ? h('span', { 'class': STATUS_CLS[stt], style: 'display:inline-flex' }, d.statusIcon(stt)) : null,
           h('span', { text: p.saldo == null ? '—' : F.money(p.saldo, { bare: true }) }),
@@ -101,6 +105,10 @@
       h('thead', null, h('tr', null, h('th', { scope: 'col', text: 'Mês' }), h('th', { scope: 'col', text: 'Resultado' }), h('th', { scope: 'col', text: 'Saldo (R$)' }))),
       tbody));
     main.appendChild(h('p', { 'class': 'ajuda', style: 'padding:10px 16px 0', text: 'Toque em um mês para abrir os lançamentos dele.' }));
+    // mês com o saldo lido da 99Pay: diz de onde vem o número (os meses seguintes partem dele)
+    var lv = null;
+    tl.forEach(function (p) { if (p.live && !lv) lv = p; });
+    if (lv) main.appendChild(h('p', { 'class': 'ajuda', style: 'padding:6px 16px 0', text: F.monthShort(lv.month) + ' parte do saldo que a 99Pay informou (dado de ' + F.whenShort(new Date(lv.live.asOf).toISOString()) + '): saldo lido + o que falta receber − o que falta pagar. Os meses seguintes partem desse saldo.' }));
   }
 
   App.views.proj = { render: render };

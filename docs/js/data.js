@@ -208,10 +208,10 @@
   }
 
   // ── leitura ────────────────────────────────────────────────────────────
-  function fetchAll(table, orderCols) {
+  function fetchAll(table, orderCols, cols) {
     var out = [], from = 0, size = 1000;
     function next() {
-      var q = sb.from(table).select('*');
+      var q = sb.from(table).select(cols || '*');
       orderCols.forEach(function (c) { q = q.order(c, { ascending: true }); });
       return q.range(from, from + size - 1).then(function (r) {
         if (r.error) throw r.error;
@@ -231,10 +231,23 @@
     var code = String((e && e.code) || ''), msg = String((e && (e.message || e.details || e.hint)) || '');
     return code === '42P01' || code === 'PGRST205' || (new RegExp(table || 'budget_settled').test(msg) && /does not exist|schema cache|could not find/i.test(msg));
   }
+  // A HORA da marca (coluna settled_at, arquivo 03_marcas_com_hora.sql, versão 1.5.0) é pedida pelo nome. Se o banco ainda
+  // não tem a coluna, pede só item e mês como antes e avisa (atOk = false): sem a hora o saldo lido da 99Pay não pode ser
+  // usado nas contas (a sobra pularia ao marcar um item), então o app segue calculando como na 1.4.0.
+  // Atenção: o erro de "coluna não existe" também cita o nome da tabela, por isso a coluna é conferida ANTES da tabela.
+  function missingColumn(e, col) {
+    var code = String((e && e.code) || ''), msg = String((e && (e.message || e.details || e.hint)) || '');
+    return code === '42703' || code === 'PGRST204' || (new RegExp(col).test(msg) && /does not exist|schema cache|could not find/i.test(msg));
+  }
   function fetchSettled() {
-    return fetchAll('budget_settled', ['item_id', 'month']).then(function (rows) { return { rows: rows, ok: true }; }, function (e) {
-      if (missingTable(e, 'budget_settled')) return { rows: [], ok: false };
+    function result(atOk) { return function (rows) { return { rows: rows, ok: true, atOk: atOk }; }; }
+    function noTable(e) {
+      if (missingTable(e, 'budget_settled')) return { rows: [], ok: false, atOk: false };
       throw e;
+    }
+    return fetchAll('budget_settled', ['item_id', 'month'], 'item_id,month,settled_at').then(result(true), function (e) {
+      if (missingColumn(e, 'settled_at')) return fetchAll('budget_settled', ['item_id', 'month'], 'item_id,month').then(result(false), noTable);
+      return noTable(e);
     });
   }
   // A lista de compras (aba Compras) também veio numa versão nova do 01_schema.sql: sem a tabela, o app
@@ -257,7 +270,7 @@
       ]).then(function (p) {
         if (p[3].error) throw p[3].error;
         var st = p[3].data && p[3].data[0] ? p[3].data[0] : { balance_start_month: F().currentMonth() + '-01', opening_balance: 0, min_balance: 1000 };
-        var data = { items: p[0], rates: p[1], entries: p[2], settled: p[4].rows, settledOk: p[4].ok, purchases: p[5].rows, purchasesOk: p[5].ok, settings: st };
+        var data = { items: p[0], rates: p[1], entries: p[2], settled: p[4].rows, settledOk: p[4].ok, settledAtOk: p[4].atOk, purchases: p[5].rows, purchasesOk: p[5].ok, settings: st };
         store.set(CACHE_KEY + uid, { at: Date.now(), data: data });
         return good({ data: data });
       }).catch(fail);
@@ -268,9 +281,13 @@
   function clearCache(uid) { store.del(CACHE_KEY + uid); }
   // Troca só os dados da cópia local (mantém a data em que ela foi baixada do servidor).
   // Usada depois de marcar pago/recebido, para a cópia sem internet já mostrar a marca.
+  // O saldo lido da 99Pay (data.saldoReal) fica só na memória: nunca vai para a cópia do aparelho.
   function patchCache(uid, data) {
     var c = store.get(CACHE_KEY + uid, null);
-    if (c && typeof c === 'object') store.set(CACHE_KEY + uid, { at: c.at, data: data });
+    if (!c || typeof c !== 'object') return;
+    var copy = {};
+    for (var k in data) if (k !== 'saldoReal') copy[k] = data[k];
+    store.set(CACHE_KEY + uid, { at: c.at, data: copy });
   }
 
   // ── gravação do orçamento ──────────────────────────────────────────────
@@ -408,7 +425,9 @@
   // ── saldo na 99Pay (só leitura; só o admin vê) ─────────────────────────
   // Quem lê o MeuPluggy é a função "saldo-99pay" do Supabase (pasta supabase/functions). O app nunca fala com a
   // Pluggy e não guarda chave nenhuma dela. Cada leitura fica na tabela pay99_balance_reads (arquivo 02_saldo99.sql),
-  // que só o admin consegue ler. O valor NÃO entra nas contas do orçamento: serve para conferir com a 99Pay.
+  // que só o admin consegue ler. Desde a versão 1.5.0 o saldo lido é o ponto de partida das contas do MÊS ATUAL (veja
+  // saldoReal abaixo e o motor, engine.js): a sobra prevista = saldo lido + o que falta receber − o que falta pagar.
+  // Sem leitura boa, sem a hora das marcas (arquivo 03) ou sem a conta corrente definida, as contas são as de sempre.
   // installed:false = o banco ainda não tem a tabela (02 não rodou): o app segue normal e o cartão nem aparece.
   var S99 = { FN: 'saldo-99pay', TABELA: 'pay99_balance_reads', VELHO_H: 30, PEDIDO_MS: 50000, PENDENTE_S: 90 };
   var S99_SUAVES = ['em_andamento', 'limite_diario', 'intervalo'];   // recusas de propósito do banco: não são defeito
@@ -523,6 +542,31 @@
     return out;
   }
 
+  // O saldo lido como ponto de partida do mês atual (vira data.saldoReal, que o motor usa). Só vale se o dado é do mês
+  // atual (pela hora do aparelho); senão devolve null e as contas ficam como sempre. Dado velho (mais de 30 h) ainda
+  // vale: a tela avisa "Desatualizado". `sum` = o que saldo99Summary devolveu.
+  function saldoReal(sum, nowMs) {
+    if (!sum || !sum.has || typeof sum.cents !== 'number' || !isFinite(sum.cents) || Math.floor(sum.cents) !== sum.cents) return null;
+    var t = F().toMs(sum.dataAt);
+    if (isNaN(t)) return null;
+    var m = F().currentMonth(new Date(t));
+    if (m !== F().currentMonth(new Date(nowMs == null ? Date.now() : nowMs))) return null;
+    return { month: m, cents: sum.cents, asOf: sum.dataAt };
+  }
+  // Duas leituras valem o mesmo? (a hora é comparada como instante: "…Z" e "…+00:00" são a mesma)
+  function sameSaldoReal(a, b) {
+    if (!a || !b) return !a && !b;
+    return a.month === b.month && a.cents === b.cents && F().toMs(a.asOf) === F().toMs(b.asOf);
+  }
+  // Hora (ISO) que o aparelho usa, por enquanto, numa marca recém-feita (o banco guarda a hora dele quando grava, e é
+  // essa que vale na próxima carga). Nunca é anterior à leitura da 99Pay que já está na tela: a marca nova ainda não está
+  // nesse saldo, e um relógio atrasado faria a sobra pular até a próxima carga.
+  function markTime(data) {
+    var t = Date.now(), sr = data && data.saldoReal, a = sr ? F().toMs(sr.asOf) : NaN;
+    if (!isNaN(a) && a >= t) t = a + 1000;
+    return new Date(t).toISOString();
+  }
+
   // ── administração de acessos ───────────────────────────────────────────
   function listProfiles() {
     return sb.from('profiles').select('*').order('created_at', { ascending: true }).then(function (r) { return r.error ? fail(r.error) : good({ rows: r.data || [] }); }, fail);
@@ -549,6 +593,7 @@
     createItem: createItem, updateItem: updateItem, deleteItem: deleteItem, applyEdit: applyEdit, saveSettings: saveSettings, setSettled: setSettled,
     createPurchase: createPurchase, updatePurchase: updatePurchase, deletePurchase: deletePurchase,
     loadSaldo99: loadSaldo99, readSaldo99: readSaldo99, saldo99Summary: saldo99Summary, saldo99Text: saldo99Text, saldo99Hint: saldo99Hint, saldo99Reply: saldo99Reply,
+    saldoReal: saldoReal, sameSaldoReal: sameSaldoReal, markTime: markTime,
     listProfiles: listProfiles, listInvites: listInvites, createInvite: createInvite, revokeInvite: revokeInvite, setRole: setRole
   };
 })(window.App = window.App || {});

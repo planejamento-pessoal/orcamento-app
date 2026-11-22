@@ -422,7 +422,7 @@ test('app.js: a leitura automática só roda para o admin, com internet, e é qu
   const zera = [...a.matchAll(/state\.data = null;[^\n]*/g)].map((m) => m[0]);
   assert.ok(zera.length >= 5);
   for (const linha of zera) assert.ok(/state\.saldo99 = null/.test(linha) || /state\.data = null; state\.idxFor = null; state\.loadError = null/.test(linha), 'sem zerar o saldo: ' + linha);
-  assert.match(a, /App\.version = '1\.4\.0';/);
+  assert.match(a, /App\.version = '1\.5\.0';/);
 });
 
 test('a leitura automática respeita os intervalos do banco (30 s manual, 1 h automática, 5 min entre conferências ao voltar)', () => {

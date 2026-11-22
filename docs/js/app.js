@@ -6,7 +6,7 @@
 (function (App) {
   'use strict';
   var d = App.dom, F = App.fmt, E = window.Engine, D = App.data, h = d.h;
-  App.version = '1.4.0';
+  App.version = '1.5.0';
   App.views = App.views || {};
 
   var state = App.state = {
@@ -124,7 +124,34 @@
   function s99() {
     return state.saldo99 || (state.saldo99 = { installed: null, rows: [], loading: false, opening: false, openedAt: 0, until: 0, msg: null, err: null });
   }
-  function s99Draw() { if (App.views.mes && App.views.mes.saldo99Refresh) App.views.mes.saldo99Refresh(); }
+  // ── saldo real: a leitura da 99Pay como ponto de partida do mês atual ──
+  // O motor só usa o saldo lido se ele vier em state.data.saldoReal (veja engine.js). Quem põe e tira isso é a função
+  // abaixo, sempre que a leitura ou os dados mudam. Fica só na memória e só para o admin (só ele enxerga as leituras).
+  // Sem a hora das marcas (arquivo 03 do Supabase) não liga: a sobra pularia a cada marca antes de o banco atualizar,
+  // então o app segue calculando como na 1.4.0.
+  function liveWanted() {
+    var S = state.saldo99, dt = state.data;
+    if (!dt || !state.user || !App.isAdmin() || !S || S.installed !== true) return null;
+    if (dt.settledOk === false || dt.settledAtOk !== true) return null;
+    var now = Date.now();
+    return D.saldoReal(D.saldo99Summary(S.rows, now), now);
+  }
+  // Põe (ou tira) o saldo lido nos dados. Devolve true se algo mudou (os dados ganham um objeto novo: o índice se refaz).
+  function syncLive() {
+    if (!state.data) return false;
+    var want = liveWanted();
+    if (D.sameSaldoReal(want, state.data.saldoReal || null)) return false;
+    var nd = Object.assign({}, state.data);
+    if (want) nd.saldoReal = want; else delete nd.saldoReal;
+    state.data = nd;
+    return true;
+  }
+  // O que mudou na leitura pode mudar as contas de qualquer aba: se o saldo lido mudou, redesenha a aba toda;
+  // senão só o cartão da 99Pay (a lista não pula).
+  function s99Draw() {
+    if (syncLive()) { App.render(true); return; }
+    if (App.views.mes && App.views.mes.saldo99Refresh) App.views.mes.saldo99Refresh();
+  }
 
   // Pede uma leitura nova. 'manual' = botão "Ler agora" (mostra o resultado); 'ao_abrir' = automática (quieta: só aparece se der defeito).
   App.saldo99Read = function (origem) {
@@ -219,6 +246,7 @@
       }
       state.offline = false; state.loadError = null;
       state.data = r.data; state.lastLoad = Date.now(); state.savedAt = Date.now();
+      syncLive();                                 // dados novos chegaram sem o saldo lido: põe de volta o que já temos na memória
       updateBanner();
       App.render(true);
       saldo99OnOpen();

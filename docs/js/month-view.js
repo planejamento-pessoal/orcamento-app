@@ -19,13 +19,14 @@
     return parts.join(', ');
   }
 
-  // cópia dos dados com a marca de (item, mês) ligada ou desligada (month = "AAAA-MM")
+  // cópia dos dados com a marca de (item, mês) ligada ou desligada (month = "AAAA-MM").
+  // A marca nova leva a hora (settled_at) só para a tela: quem grava a hora de verdade é o banco, e ela vale na próxima carga.
   function hasMark(data, itemId, month) {
     return (data.settled || []).some(function (s) { return s.item_id === itemId && String(s.month).slice(0, 7) === month; });
   }
   function withMark(data, itemId, month, on) {
     var rest = (data.settled || []).filter(function (s) { return !(s.item_id === itemId && String(s.month).slice(0, 7) === month); });
-    return Object.assign({}, data, { settled: on ? rest.concat([{ item_id: itemId, month: E.toDbDate(month) }]) : rest });
+    return Object.assign({}, data, { settled: on ? rest.concat([{ item_id: itemId, month: E.toDbDate(month), settled_at: App.data.markTime(data) }]) : rest });
   }
 
   // Redesenha a tela logo depois do toque: dá tempo de a chavinha deslizar antes de a lista mudar.
@@ -111,10 +112,14 @@
       h('span', { text: 'Veio de ' + F.monthName(c.prev) + (c.real ? ' (corrigido)' : '') }),
       h('span', { 'class': 'v' + (c.cents < 0 ? ' neg-txt' : ''), text: F.money(c.cents) }));
   }
-  function carrySection(c, month) {
+  // No mês em que vale o saldo lido da 99Pay (c.live) a linha mostra esse saldo e o toque faz uma leitura nova:
+  // digitar um valor aqui não adiantaria, porque neste mês o saldo vem do banco.
+  function carrySection(c, month, info) {
     var it = c.item;
-    var meta = c.real ? 'Saldo real que você lançou. O previsto era ' + F.money(c.auto) : 'Sobra de ' + F.monthName(c.prev) + ', automática';
-    var btn = h('button', { 'class': 'linha', type: 'button', on: { click: function () { App.sheets.openLaunch(it.id, month); } } },
+    var meta = c.live ? 'Saldo lido da 99Pay' + (info && info.old ? ' (desatualizado)' : '') + '. Toque para ler de novo'
+      : c.real ? 'Saldo real que você lançou. O previsto era ' + F.money(c.auto) : 'Sobra de ' + F.monthName(c.prev) + ', automática';
+    var open = c.live ? function () { App.saldo99Read('manual'); } : function () { App.sheets.openLaunch(it.id, month); };
+    var btn = h('button', { 'class': 'linha', type: 'button', on: { click: open } },
       h('span', { 'class': 'dia' }),
       h('span', { 'class': 'nome' }, h('span', { 'class': 'nome-txt', text: it.name }), h('span', { 'class': 'meta', text: meta })),
       h('span', { 'class': 'valor' + (c.real ? ' real' : '') + (c.cents < 0 ? ' neg-txt' : '') }, h('span', { 'class': 'sr', text: 'R$ ' }), F.money(c.cents, { bare: true }),
@@ -124,14 +129,58 @@
       h('ul', { 'class': 'livro' }, h('li', null, btn)));
   }
 
+  // ── resumo do mês com o saldo lido da 99Pay ─────────────────────────────
+  // No mês atual, para o admin, com a leitura valendo (o motor devolve v.live): em vez de somar tudo o que já foi
+  // pago, o resumo parte do saldo que o banco informou e só considera o que ainda falta:
+  //   sobra prevista no fim do mês = saldo lido + o que falta receber − o que falta pagar.
+  // O que já foi pago ou recebido (até a hora da leitura) já está dentro do saldo lido e não é contado de novo.
+  function itens(n) { return n ? ' · ' + n + (n === 1 ? ' item' : ' itens') : ''; }
+  function lateText(L) {
+    var t = L.tarde, parts = [];
+    if (t.nSaidas) parts.push(t.nSaidas + (t.nSaidas === 1 ? ' pagamento' : ' pagamentos') + ' (' + F.money(t.saidas) + ')');
+    if (t.nEntradas) parts.push(t.nEntradas + (t.nEntradas === 1 ? ' recebimento' : ' recebimentos') + ' (' + F.money(t.entradas) + ')');
+    return parts.length ? 'Marcado depois dessa leitura: ' + parts.join(' e ') + '. Segue em "A pagar" / "A receber" até o banco atualizar o saldo; depois disso a sobra não muda.' : '';
+  }
+  function liveExtrato(L, info, chip, saldoCls, month) {
+    var late = lateText(L);
+    return h('section', { 'class': 'extrato', 'aria-label': 'Resumo de ' + F.monthLong(month) },
+      h('div', { 'class': 'ex-linha ex-veio' },
+        h('span', { text: 'Saldo na 99Pay' }),
+        h('span', { 'class': 'v' + (L.cents < 0 ? ' neg-txt' : ''), text: F.money(L.cents) })),
+      h('div', { 'class': 'ex-falta' }, h('span', { text: (info.old ? 'Desatualizado: dado de ' : 'dado de ') + info.when + ' (' + info.ago + ')' })),
+      h('div', { 'class': 'ex-linha' }, h('span', { text: 'A receber' + itens(L.nReceber) }), h('span', { 'class': 'v', text: F.money(L.receber) })),
+      h('div', { 'class': 'ex-linha' }, h('span', { text: 'A pagar' + itens(L.nPagar) }), h('span', { 'class': 'v', text: F.money(L.pagar) })),
+      h('div', { 'class': 'ex-saldo' },
+        h('span', { 'class': 'rot', text: 'Sobra prevista no fim do mês' }),
+        h('span', { 'class': 'v' + saldoCls, text: F.money(L.sobra) })),
+      chip,
+      info.old ? h('p', { 'class': 'ajuda', text: 'O dado da 99Pay tem mais de 30 horas, então a sobra pode estar defasada. Toque em "Ler agora" mais abaixo.' }) : null,
+      late ? h('p', { 'class': 'ajuda', text: late }) : null);
+  }
+  // Quando foi o dado da 99Pay que está valendo (L.asOf é o instante, em milissegundos) e se já está velho.
+  function liveInfo(L, now) {
+    var iso = new Date(L.asOf).toISOString(), S = App.state.saldo99;
+    var sum = S ? App.data.saldo99Summary(S.rows, now) : null;
+    return { when: F.whenShort(iso), ago: F.agoText(iso, now), old: !!(sum && sum.old) };
+  }
+
   // ── saldo na 99Pay: só leitura, só o admin, só no mês atual ─────────────
-  // O valor vem da função "saldo-99pay" (que lê o MeuPluggy) e fica SEPARADO: não entra em entradas, saídas,
-  // resultado nem no saldo acumulado. Serve para conferir se o orçamento bate com o que a 99Pay mostra.
+  // O valor vem da função "saldo-99pay" (que lê o MeuPluggy). O cartão mostra a leitura e o botão "Ler agora"; nunca soma
+  // nada por conta própria: quem usa o saldo lido nas contas do mês é o motor (engine.js), e só quando o resumo acima
+  // mostra "Saldo na 99Pay" (v.live). Fora disso o valor é só informação, para conferir com o app da 99Pay.
   // O cartão só existe depois que o app confirmou que o banco tem a tabela (App.state.saldo99.installed === true).
   var MEUPLUGGY = 'https://meu.pluggy.ai/';
   function saldo99Visible() {
     var S = App.state.saldo99;
     return !!(S && S.installed === true && App.isAdmin() && App.state.month === F.currentMonth());
+  }
+  // O que o cartão diz sobre o uso do saldo lido: está valendo nas contas do mês, ou por que ainda não está.
+  function liveNote() {
+    var data = App.state.data, idx = App.index();
+    if (E.isLive(idx, App.state.month)) return 'Este saldo é o ponto de partida das contas do mês: sobra prevista = saldo lido + o que falta receber − o que falta pagar. Marque como pago o que você pagar.';
+    if (data && data.settledOk !== false && data.settledAtOk !== true) return 'Só leitura por enquanto: para este saldo entrar nas contas, falta rodar o arquivo 03_marcas_com_hora.sql no Supabase.';
+    if (!data || !data.items.some(E.isCarryItem)) return 'Só leitura por enquanto: para este saldo entrar nas contas, ligue "Puxar a sobra do mês anterior" no item da 99Pay (toque nele, em Mais opções).';
+    return 'Só leitura por enquanto: o saldo lido entra nas contas quando houver uma leitura boa deste mês.';
   }
   function saldo99Fill(sec) {
     var S = App.state.saldo99, D = App.data, now = Date.now(), sum = D.saldo99Summary(S.rows, now);
@@ -162,7 +211,7 @@
         d.icon('refresh', 'p'), lendo ? 'Lendo…' : 'Ler agora'),
       h('a', { 'class': 'btn p', href: MEUPLUGGY, target: '_blank', rel: 'noopener noreferrer', 'data-s99': 'abrir' },
         'Abrir MeuPluggy', h('span', { 'class': 'sr', text: ' (abre no navegador)' }))));
-    body.appendChild(h('p', { 'class': 'ajuda', text: 'Só leitura: este valor não entra nas contas do orçamento. Se não bater com o app da 99Pay, toque em Abrir MeuPluggy, use Atualizar lá, espere uns minutos e volte aqui em Ler agora.' }));
+    body.appendChild(h('p', { 'class': 'ajuda', text: liveNote() + ' Se não bater com o app da 99Pay, toque em Abrir MeuPluggy, use Atualizar lá, espere uns minutos e volte aqui em Ler agora.' }));
 
     // linha de status: é sempre o MESMO elemento (região de aviso), para o leitor de tela anunciar cada mudança
     st.textContent = lendo ? 'Lendo o saldo…' : (S.msg ? S.msg.text : '');
@@ -229,7 +278,9 @@
     else if (stt === 'ok') chip = h('span', { 'class': 'estado ok' }, d.statusIcon('ok'), 'Acima do mínimo de ' + F.money(minC));
     else if (stt === 'low') chip = h('span', { 'class': 'estado low' }, d.statusIcon('low'), 'Abaixo do mínimo de ' + F.money(minC));
     else chip = h('span', { 'class': 'estado neg' }, d.statusIcon('neg'), 'Saldo negativo');
-    main.appendChild(h('section', { 'class': 'extrato', 'aria-label': 'Resumo de ' + F.monthLong(month) },
+    var live = v.live, info = live ? liveInfo(live, Date.now()) : null;
+    if (live) main.appendChild(liveExtrato(live, info, chip, saldoCls, month));
+    else main.appendChild(h('section', { 'class': 'extrato', 'aria-label': 'Resumo de ' + F.monthLong(month) },
       v.carry ? carrySummary(v.carry) : null,
       h('div', { 'class': 'ex-linha' }, h('span', { text: 'Entradas' }), h('span', { 'class': 'v', text: F.money(v.totalEntradas) })),
       faltaLine(v.baixa.entradas, 'entrada'),
@@ -255,7 +306,7 @@
     }
 
     // listas
-    if (v.carry) main.appendChild(carrySection(v.carry, month));
+    if (v.carry) main.appendChild(carrySection(v.carry, month, info));
     try { var s99 = saldo99Card(); if (s99) main.appendChild(s99); }   // um defeito neste cartão nunca derruba a aba
     catch (e) { if (window.console) console.error(e); }
     main.appendChild(section('Saídas', 'saida', v.saidas, v.totalSaidas, month, 'Nenhuma saída neste mês.', ctx, v.baixa.saidas));

@@ -95,10 +95,15 @@
     // sozinha; digitar aqui é dizer o saldo REAL da conta. `isCC`: o item é a conta corrente em qualquer mês (nunca repete).
     var carry = E.carryAt(idx, item, month), isCC = E.isCarry(idx, item);
     if (!App.can()) return openReadOnly(item, month, cur, inst, carry);
+    // `liveCC`: neste mês as contas partem do saldo que a 99Pay informou (o resumo mostra "Saldo na 99Pay"). O que se
+    // digita na conta corrente fica guardado, mas o motor não o usa enquanto a leitura valer (veja engine.js, "saldo real").
+    var liveCC = isCC && E.isLive(idx, month);
 
-    var valLabel = carry ? 'Saldo da conta no começo de ' + F.monthName(month) : 'Valor em ' + F.monthShort(month);
+    var valLabel = liveCC ? 'Saldo digitado (não é usado neste mês)' : carry ? 'Saldo da conta no começo de ' + F.monthName(month) : 'Valor em ' + F.monthShort(month);
     var val = d.moneyInput(cur.cents, { 'aria-label': valLabel });
-    var srcTxt = carry
+    var srcTxt = liveCC
+      ? 'Neste mês o saldo vem da leitura da 99Pay (com os juros que o banco soma): não precisa digitar. O valor digitado aqui fica guardado, mas só vale se a leitura sair ou em aparelhos que não usam a leitura.'
+      : carry
       ? (carry.real
         ? 'Saldo que você lançou (aparece em azul). O previsto era ' + F.money(carry.auto) + ', a sobra de ' + F.monthName(carry.prev) + '.'
         : 'Automático: é o que sobrou de ' + F.monthName(carry.prev) + '. Se o saldo do seu banco for outro, digite o valor real: os meses seguintes partem dele.')
@@ -123,7 +128,7 @@
     function hints() {
       var cents = F.parseMoney(val.value.trim() === '' ? '0' : val.value);
       end.hide(!(item.recurring || scope.get() === 'adiante'));
-      settle.hide(!settleOk || isNaN(cents) || cents === 0 || !!carry);   // a sobra do mês anterior não é "recebida"
+      settle.hide(!settleOk || isNaN(cents) || cents === 0 || !!carry || liveCC);   // a sobra do mês anterior (ou o saldo lido) não é "recebida"
       if (isNaN(cents) || isCC) { scopeHint.textContent = ''; return; }
       if (scope.get() === 'mes') {
         var proj = E.projectedAt(idx, item, E.mi(month));
@@ -253,7 +258,8 @@
       else {
         carrySwitch = d.chaveRow('Puxar a sobra do mês anterior', item.carry_over === true, syncCarry);
         carryNote = 'Para o item que guarda o dinheiro que você tem na conta do banco. Em cada mês depois de ' + F.monthShort(App.state.data.settings.balance_start_month)
-          + ', ele mostra o que sobrou do mês anterior, sem somar de novo no saldo. Se o banco mostrar outro valor, você corrige no mês.';
+          + ', ele mostra o que sobrou do mês anterior, sem somar de novo no saldo. Se o banco mostrar outro valor, você corrige no mês.'
+          + ' No mês atual, com a leitura da 99Pay funcionando, ele mostra o saldo lido do banco e você não precisa corrigir.';
       }
     }
 
