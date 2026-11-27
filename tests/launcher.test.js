@@ -13,16 +13,18 @@ test('a abertura de emergência do APK é igual ao docs/index.html', () => {
 });
 
 // ── política de segurança (CSP) ─────────────────────────────────────────
-const { cspHashes, policyOf } = require('../tools/csp.js');
+const { cspHashes, policyOf, SCRIPT_FORA } = require('../tools/csp.js');
 const html = docs.toString('utf8');
 const policy = policyOf(html) || '';
+const CLOUDFLARE = 'https://challenges.cloudflare.com';
 const dir = (name) => (policy.split(';').map((s) => s.trim()).find((s) => s.split(/\s+/)[0] === name) || '').split(/\s+/).slice(1);
 
 test('CSP: os hashes dos scripts do index.html estão em dia', () => {
   assert.ok(policy, 'index.html sem a meta Content-Security-Policy');
   const want = cspHashes(html);
   assert.equal(want.length, 2, 'esperava 2 blocos de script escritos no index.html (tema e carregador)');
-  assert.deepEqual(dir('script-src'), [...want, 'blob:'], 'hashes velhos. Rode:  node tools/sync-launcher.js');
+  // hashes + blob: + o endereço da verificação de segurança do Cloudflare (única fonte de script de fora)
+  assert.deepEqual(dir('script-src'), [...want, 'blob:', ...SCRIPT_FORA], 'hashes velhos. Rode:  node tools/sync-launcher.js');
 });
 
 test('CSP: nada de unsafe-inline/unsafe-eval em script, nada de curinga nem http', () => {
@@ -31,9 +33,19 @@ test('CSP: nada de unsafe-inline/unsafe-eval em script, nada de curinga nem http
   assert.ok(!/(^|[\s;])\*([\s;]|$)/.test(policy), 'curinga * sozinho na política');
   assert.ok(!/http:/.test(policy), 'http: na política');
   assert.deepEqual(dir('default-src'), ["'none'"]);
-  for (const d of ['object-src', 'base-uri', 'form-action', 'frame-src']) assert.deepEqual(dir(d), ["'none'"], d);
-  assert.deepEqual(dir('connect-src'), ["'self'", 'https://*.supabase.co'], 'só este site e o Supabase');
+  for (const d of ['object-src', 'base-uri', 'form-action']) assert.deepEqual(dir(d), ["'none'"], d);
+  // o Cloudflare só entra por causa da verificação de segurança (Turnstile): script, moldura da verificação e a conexão dela
+  assert.deepEqual(SCRIPT_FORA, [CLOUDFLARE], 'a única fonte de script de fora é o Cloudflare');
+  assert.deepEqual(dir('frame-src'), [CLOUDFLARE], 'a única moldura permitida é a da verificação do Cloudflare');
+  assert.deepEqual(dir('connect-src'), ["'self'", 'https://*.supabase.co', CLOUDFLARE], 'só este site, o Supabase e a verificação do Cloudflare');
   for (const d of ['img-src', 'font-src', 'manifest-src', 'worker-src']) assert.deepEqual(dir(d), ["'self'"], d);
+});
+
+test('o carregador aperta a política depois do config.js sem tirar o Cloudflare (senão a verificação de segurança quebra)', () => {
+  const m = /m\.content = "([^"]*)" \+ u\.origin \+ "([^"]*)";/.exec(html);
+  assert.ok(m, 'não achei a segunda política do narrow()');
+  assert.equal(m[1], "connect-src 'self' ");
+  assert.equal(m[2].trim(), CLOUDFLARE);
 });
 
 test('o carregador não depende de código inline nem de eval (a CSP bloquearia)', () => {

@@ -68,7 +68,8 @@ test('manifesto: sem backup, sem tráfego aberto, só as permissões necessária
   assert.match(m, /android:dataExtractionRules="@xml\/data_extraction_rules"/);
   assert.ok(!/android:debuggable/.test(m), 'debuggable no manifesto');
   const perms = [...m.matchAll(/<uses-permission android:name="([^"]+)"/g)].map((x) => x[1]).sort();
-  assert.deepEqual(perms, ['android.permission.ACCESS_NETWORK_STATE', 'android.permission.INTERNET']);
+  // USE_BIOMETRIC: só para a pergunta "é você?" da digital (o Android faz a pergunta; nenhuma digital chega ao app)
+  assert.deepEqual(perms, ['android.permission.ACCESS_NETWORK_STATE', 'android.permission.INTERNET', 'android.permission.USE_BIOMETRIC']);
   assert.equal([...m.matchAll(/android:exported="true"/g)].length, 1, 'só a tela principal pode ser exportada');
   assert.equal([...m.matchAll(/<(service|receiver|provider)\b/g)].length, 0, 'sem service/receiver/provider');
   assert.equal([...m.matchAll(/<intent-filter>/g)].length, 1, 'só o filtro de abrir pelo ícone (sem links externos que abram o app)');
@@ -90,9 +91,28 @@ test('MainActivity: tela protegida, links travados, rede só para o app e o Supa
   assert.ok(!/onReceivedSslError/.test(j), 'não pode aceitar certificado inválido');
   assert.ok(!/setWebContentsDebuggingEnabled\(true\)/.test(j.replace(/FLAG_DEBUGGABLE[\s\S]{0,200}setWebContentsDebuggingEnabled\(true\)/, '')), 'depuração remota ligada fora do build de teste');
   assert.ok(!/addJavascriptInterface\([^)]*\)/.test(j.replace(/w\.addJavascriptInterface\(new Bridge\(\), "OrcAndroid"\)/, '')), 'só a ponte OrcAndroid pode ser exposta à página');
-  assert.equal([...j.matchAll(/@JavascriptInterface/g)].length, 1, 'a ponte deve ter UM método');
+  // a ponte tem 3 métodos, todos com entrada simples: compartilhar um texto, "dá para pedir a digital?" e "peça a digital"
+  assert.equal([...j.matchAll(/@JavascriptInterface/g)].length, 3, 'a ponte deve ter 3 métodos');
+  const metodos = [...j.matchAll(/@JavascriptInterface\s+public\s+(\w+)\s+(\w+)\(([^)]*)\)/g)].map((m) => m[1] + ' ' + m[2] + '(' + m[3].replace(/final /, '').trim() + ')');
+  assert.deepEqual(metodos, ['String bioStatus()', 'void bioAsk(int modo)', 'void share(String text)']);
+  // a página só recebe de volta um NÚMERO escrito pelo app (nada do que ela mandou volta a ser executado)
+  const retornos = [...j.matchAll(/evaluateJavascript\(([^;]*);/g)].map((m) => m[1]);
+  assert.deepEqual(retornos, ['"window.App&&window.App.bio&&window.App.bio.nativeDone&&window.App.bio.nativeDone(" + codigo + ")", null)']);
+  assert.match(j, /private void bioDone\(final int codigo\)/);
+  assert.match(j, /askBiometric\(modo == 2 \? 2 : 1\)/, 'a página não escolhe nenhum texto da pergunta: só o modo (1 ou 2)');
+  assert.ok(!/setNegativeButton|setDescription|setSubtitle\(\s*[a-z]\w*\s*\)/.test(j), 'os textos da pergunta da digital são fixos');
   const urls = [...j.matchAll(/https?:\/\/[^\s"')]+/g)].map((m) => m[0]).filter((u) => !/sdk|android|supabase\.co|ABCD|site-ruim|seu-site/.test(u));
   assert.deepEqual(urls, [], 'endereços escritos à mão no MainActivity.java');
+  // sites que o app pode acessar: o dele, o Supabase e o Cloudflare (só a verificação de segurança do login). Nenhum outro.
+  const fn = /static boolean isAllowedHost[\s\S]*?\n    \}/.exec(j);
+  assert.ok(fn, 'não achei isAllowedHost');
+  assert.equal([...fn[0].matchAll(/return true;/g)].length, 2, 'isAllowedHost: só o site do app e o Cloudflare liberam direto');
+  assert.equal([...fn[0].matchAll(/\breturn\b/g)].length, 4, 'isAllowedHost: nenhum outro caminho libera um site (nulo, site do app, Cloudflare, Supabase)');
+  assert.match(j, /HOST_VERIFICACAO\s*=\s*"challenges\.cloudflare\.com"/);
+  assert.match(fn[0], /h\.equals\(HOST_VERIFICACAO\)/);
+  assert.match(fn[0], /h\.endsWith\("\.supabase\.co"\)/);
+  // moldura dentro da página (a do Cloudflare) nunca abre o navegador
+  assert.match(j, /if \(!request\.isForMainFrame\(\)\) return false;/);
 });
 
 test('build.gradle: endereço do app vem do ambiente e é validado; sem senha de assinatura escrita', () => {

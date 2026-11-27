@@ -1,16 +1,21 @@
 package com.bruno.orcamento;
 
 import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
+import android.hardware.biometrics.BiometricManager;
+import android.hardware.biometrics.BiometricPrompt;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
@@ -52,9 +57,12 @@ import java.util.Locale;
  * Segurança desta casca (o app tem valores da família):
  *  - tela protegida: sem print, sem gravação de tela e sem miniatura na lista de apps recentes;
  *  - só o endereço do app abre aqui dentro; qualquer outro link vai para o navegador;
- *  - o próprio Android barra conexões para qualquer site que não seja o do app ou o Supabase;
+ *  - o próprio Android barra conexões para qualquer site que não seja o do app, o Supabase ou a
+ *    verificação de segurança do Cloudflare (login);
  *  - sem acesso a arquivos do celular, sem janelas extras, sem depuração remota no APK final;
- *  - sem backup na nuvem nem transferência de dados para outro aparelho.
+ *  - sem backup na nuvem nem transferência de dados para outro aparelho;
+ *  - digital: a pergunta "é você?" é feita pelo próprio Android (BiometricPrompt, Android 11 ou mais
+ *    novo). O app só recebe um número (0 = confirmou); nenhuma digital nem dado dela chega até aqui.
  */
 public class MainActivity extends Activity {
 
@@ -75,6 +83,10 @@ public class MainActivity extends Activity {
     private String startNoSlash;
     private ConnectivityManager connectivity;
     private ConnectivityManager.NetworkCallback networkCallback;
+
+    // Digital: um pedido por vez (o resultado volta para a página como um número fixo, veja bioDone).
+    private boolean bioBusy;
+    private CancellationSignal bioCancel;
 
     // "Abertura de emergência": cópia do index.html que vem dentro do APK (assets/index.html).
     private String launcherHtml;
@@ -160,8 +172,11 @@ public class MainActivity extends Activity {
         if ((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
             WebView.setWebContentsDebuggingEnabled(true);   // chrome://inspect só em build de teste
         }
-        // Única ponte com o Android: abrir a folha de compartilhar (WhatsApp etc.).
-        // Só funciona nas páginas do endereço do app (a navegação é travada abaixo).
+        // Única ponte com o Android (OrcAndroid): abrir a folha de compartilhar (WhatsApp etc.) e perguntar
+        // "é você?" com a digital do celular. O Android entrega a ponte a TODOS os quadros da página, inclusive ao quadro da
+        // verificação do Cloudflare (não dá para separar por quadro sem uma biblioteca nova). Por isso a navegação é travada
+        // abaixo (só o app, o Supabase e o Cloudflare), e as 3 funções fazem o mínimo: uma folha de compartilhar com um texto de
+        // até 5000 letras (a pessoa escolhe o destino), uma pergunta da digital e uma palavra fixa. Nada devolve dado do app.
         w.addJavascriptInterface(new Bridge(), "OrcAndroid");
         w.setWebViewClient(new Client());
     }
@@ -261,11 +276,15 @@ public class MainActivity extends Activity {
         return url.equals(bare) || url.startsWith(bare + "?") || url.startsWith(bare + "#");
     }
 
-    /** Pode o app falar com este site? Só o site do app e o Supabase (*.supabase.co). */
+    // Verificação de segurança do login (Cloudflare Turnstile): só este endereço, e só a parte dele que o Cloudflare serve.
+    private static final String HOST_VERIFICACAO = "challenges.cloudflare.com";
+
+    /** Pode o app falar com este site? O site do app, o Supabase (*.supabase.co) e a verificação de segurança do Cloudflare. */
     static boolean isAllowedHost(String host, String startHost) {
         if (host == null || host.length() == 0) return false;
         String h = host.toLowerCase(Locale.ROOT);
         if (startHost != null && h.equals(startHost.toLowerCase(Locale.ROOT))) return true;
+        if (h.equals(HOST_VERIFICACAO)) return true;
         return h.endsWith(".supabase.co") && h.length() > ".supabase.co".length();
     }
 
@@ -289,6 +308,10 @@ public class MainActivity extends Activity {
     private class Client extends WebViewClient {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+            // Moldura dentro da página (a verificação do Cloudflare): fica lá dentro e nunca abre o navegador.
+            // O que ela pode buscar na rede é barrado em shouldInterceptRequest (e a política da página só deixa
+            // abrir moldura do Cloudflare).
+            if (!request.isForMainFrame()) return false;
             Uri u = request.getUrl();
             if (isInternal(u)) return false;
             openExternal(u);
@@ -341,6 +364,26 @@ public class MainActivity extends Activity {
     // ── ponte para o Android ───────────────────────────────────────────────
 
     private class Bridge {
+        // Dá para pedir a digital neste celular? "pronta", "sem_digital" (nada cadastrado no celular), "antigo" (Android
+        // abaixo do 11), "indisponivel" (o sensor não respondeu agora: passageiro) ou "sem_aparelho". É só uma destas
+        // palavras fixas.
+        @JavascriptInterface
+        public String bioStatus() {
+            return bioStatusNow();
+        }
+
+        // Abre a pergunta "é você?" do Android. modo: 1 = abrir o app, 2 = ativar a digital. O resultado volta para a
+        // página como um número (veja bioDone); a página não escolhe nenhum texto da pergunta.
+        @JavascriptInterface
+        public void bioAsk(final int modo) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    askBiometric(modo == 2 ? 2 : 1);
+                }
+            });
+        }
+
         @JavascriptInterface
         public void share(final String text) {
             if (text == null || text.length() == 0 || text.length() > 5000) return;
@@ -357,6 +400,99 @@ public class MainActivity extends Activity {
                     }
                 }
             });
+        }
+    }
+
+    // ── digital ────────────────────────────────────────────────────────────
+    // O Android faz a pergunta e decide se a digital (ou, se ela falhar, o PIN/padrão do celular) confere.
+    // Daqui só sai um número para a página: 0 confirmou, 1 cancelou, 2 falhou, 3 sem digital cadastrada, 4 travou
+    // por tentativas. Nada da digital passa por este app. Só no Android 11 ou mais novo (menos caminhos para errar).
+
+    private String bioStatusNow() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return "antigo";
+        return Bio.status(this);
+    }
+
+    private void askBiometric(int modo) {
+        if (bioBusy) return;   // já tem uma pergunta na tela: o resultado dela é o que a página vai receber
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) { bioDone(2); return; }
+        bioBusy = true;
+        bioCancel = Bio.ask(this, modo);
+        if (bioCancel == null) bioDone(2);
+    }
+
+    // Devolve o resultado para a página (só o número, escrito por nós: nada que a página mande volta para ela).
+    private void bioDone(final int codigo) {
+        bioBusy = false;
+        bioCancel = null;
+        if (web == null) return;
+        web.evaluateJavascript("window.App&&window.App.bio&&window.App.bio.nativeDone&&window.App.bio.nativeDone(" + codigo + ")", null);
+    }
+
+    // Isolado numa classe à parte: nos Android antigos ela nunca é carregada.
+    @TargetApi(Build.VERSION_CODES.R)
+    private static final class Bio {
+        // Digital/rosto do celular, ou o bloqueio de tela (PIN, padrão, senha) se a digital não funcionar.
+        static final int ACEITA = BiometricManager.Authenticators.BIOMETRIC_WEAK | BiometricManager.Authenticators.DEVICE_CREDENTIAL;
+
+        static String status(Context c) {
+            try {
+                BiometricManager m = c.getSystemService(BiometricManager.class);
+                if (m == null) return "sem_aparelho";
+                int r = m.canAuthenticate(ACEITA);
+                if (r == BiometricManager.BIOMETRIC_SUCCESS) return "pronta";
+                if (r == BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED) return "sem_digital";
+                // Sensor ocupado ou ainda não pronto: é passageiro. A página abre só desta vez e NÃO desliga a trava
+                // ("sem_aparelho" é para o que não volta: celular sem o recurso).
+                if (r == BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE) return "indisponivel";
+                return "sem_aparelho";
+            } catch (RuntimeException e) {
+                return "indisponivel";
+            }
+        }
+
+        static CancellationSignal ask(final MainActivity a, int modo) {
+            try {
+                BiometricPrompt p = new BiometricPrompt.Builder(a)
+                        .setTitle("Orçamento")
+                        .setSubtitle(modo == 2 ? "Confirme para ativar a entrada com a digital" : "Confirme que é você para abrir o app")
+                        .setAllowedAuthenticators(ACEITA)
+                        .setConfirmationRequired(false)
+                        .build();
+                CancellationSignal cs = new CancellationSignal();
+                p.authenticate(cs, a.getMainExecutor(), new BiometricPrompt.AuthenticationCallback() {
+                    @Override
+                    public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
+                        a.bioDone(0);
+                    }
+
+                    @Override
+                    public void onAuthenticationError(int code, CharSequence msg) {
+                        a.bioDone(codigoDe(code));
+                    }
+                    // onAuthenticationFailed (dedo não reconhecido): o próprio Android deixa tentar de novo.
+                });
+                return cs;
+            } catch (RuntimeException e) {
+                return null;
+            }
+        }
+
+        static int codigoDe(int code) {
+            switch (code) {
+                case BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED:
+                case BiometricPrompt.BIOMETRIC_ERROR_CANCELED:
+                    return 1;
+                case BiometricPrompt.BIOMETRIC_ERROR_NO_BIOMETRICS:
+                case BiometricPrompt.BIOMETRIC_ERROR_NO_DEVICE_CREDENTIAL:
+                case BiometricPrompt.BIOMETRIC_ERROR_HW_NOT_PRESENT:
+                    return 3;
+                case BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT:
+                case BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT_PERMANENT:
+                    return 4;
+                default:
+                    return 2;
+            }
         }
     }
 
@@ -436,6 +572,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         handler.removeCallbacks(watchdog);
+        if (bioCancel != null) {
+            try {
+                bioCancel.cancel();
+            } catch (RuntimeException e) {
+                // já tinha acabado
+            }
+            bioCancel = null;
+        }
         if (web != null) {
             ViewGroup parent = (ViewGroup) web.getParent();
             if (parent != null) parent.removeView(web);

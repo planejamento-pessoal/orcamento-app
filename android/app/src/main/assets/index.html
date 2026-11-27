@@ -4,10 +4,12 @@
 <meta charset="utf-8">
 <!-- Política de segurança de conteúdo. NÃO edite à mão: `node tools/sync-launcher.js` recalcula
      os hashes dos blocos de script. Só roda: os 2 blocos de script escritos neste arquivo
-     (pelo hash) e blob: (os arquivos do app, que o carregador monta). Dados só podem ir
-     para este site e para o seu Supabase (o carregador ainda restringe ao endereço exato
-     do seu projeto). -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-toI93IvPVewwYJ4bridattTUIv9StuC4H6yH/LIyVZg=' 'sha256-K2rgDNBOZ+ZBnAOr1sf2i64pn0AMwfhSXOXUeSUybbA=' blob:; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self' https://*.supabase.co; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src 'none'">
+     (pelo hash), blob: (os arquivos do app, que o carregador monta) e o script da verificação
+     de segurança do Cloudflare (Turnstile), que só é pedido se o config.js tiver a chave pública
+     dele. Dados só podem ir para este site, para o seu Supabase (o carregador ainda restringe ao
+     endereço exato do seu projeto) e, só para a verificação, para o Cloudflare. A única moldura
+     (iframe) permitida é a da própria verificação do Cloudflare. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-toI93IvPVewwYJ4bridattTUIv9StuC4H6yH/LIyVZg=' 'sha256-2jdXsY6hTxbs0ty3XvpdcOHVztsscCxDlS90nh0lyWA=' blob: https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self' https://*.supabase.co https://challenges.cloudflare.com; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-src https://challenges.cloudflare.com">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
@@ -180,15 +182,15 @@
       document.head.appendChild(s);
     })(0);
   }
-  // Logo depois do config.js: limita as conexões ao endereço EXATO do seu Supabase. A política de
-  // cima libera *.supabase.co; uma segunda política só pode apertar mais, nunca afrouxar.
+  // Logo depois do config.js: limita as conexões ao endereço EXATO do seu Supabase (mais o Cloudflare, da verificação
+  // de segurança). A política de cima libera *.supabase.co; uma segunda política só pode apertar mais, nunca afrouxar.
   function narrow() {
     try {
       var u = new URL(String(window.APP_CONFIG.SUPABASE_URL).trim());
       if (u.protocol !== 'https:' || !/^[a-z0-9-]+\.supabase\.co$/.test(u.hostname)) return;
       var m = document.createElement('meta');
       m.httpEquiv = 'Content-Security-Policy';
-      m.content = "connect-src 'self' " + u.origin;
+      m.content = "connect-src 'self' " + u.origin + " https://challenges.cloudflare.com";
       document.head.appendChild(m);
     } catch (e) {}
   }

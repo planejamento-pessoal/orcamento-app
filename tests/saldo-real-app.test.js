@@ -372,9 +372,9 @@ test('app.js: toda mudança na leitura (e todo carregamento de dados) passa por 
   assert.equal([...a.matchAll(/state\.data = null;/g)].length >= 5, true);
 });
 
-test('app.js: a versão é 1.5.0 e o saldo lido nunca vira parte da cópia do aparelho (cache.data)', () => {
+test('app.js: a versão é 1.6.0 e o saldo lido nunca vira parte da cópia do aparelho (cache.data)', () => {
   const a = read('docs', 'js', 'app.js');
-  assert.match(a, /App\.version = '1\.5\.0';/);
+  assert.match(a, /App\.version = '1\.6\.0';/);
   const cache = a.indexOf('state.data = cache.data');
   assert.ok(cache > 0, 'a cópia do aparelho só alimenta state.data na abertura');
 });
@@ -441,12 +441,17 @@ test('proj-view.js: no mês com o saldo lido a tabela e o balão mostram o que f
   assert.ok(!/p\.live\.(cents|receber|pagar|variacao)\s*[-+*]|[-+*]\s*p\.live\./.test(p), 'proj-view.js não faz contas com o saldo lido');
 });
 
-test('o app não ganhou endereços de internet novos (continua só o Supabase e o link "Abrir MeuPluggy")', () => {
-  // (a lista de arquivos de docs/js é travada por launcher.test.js; index.html, config.js e sw.js não são tocados)
+test('o app não ganhou endereços de internet novos (continua só o Supabase, o link "Abrir MeuPluggy" e a verificação do Cloudflare)', () => {
+  // (a lista de arquivos de docs/js é travada por launcher.test.js)
   const arquivos = fs.readdirSync(path.join(root, 'docs', 'js'));
   const todos = arquivos.map((f) => semComentarios(read('docs', 'js', f))).join('\n');
   const hosts = new Set([...todos.matchAll(/https?:\/\/([^\s'"/)]+)/g)].map((x) => x[1]));
-  for (const h of hosts) assert.ok(/^(meu\.pluggy\.ai|www\.w3\.org)$/.test(h) || /supabase\.co/.test(h), 'endereço novo: ' + h);
+  for (const h of hosts) assert.ok(/^(meu\.pluggy\.ai|www\.w3\.org|challenges\.cloudflare\.com)$/.test(h) || /supabase\.co/.test(h), 'endereço novo: ' + h);
+  // o Cloudflare (verificação de segurança) só aparece no auth-view.js, que é quem carrega o script dele
+  for (const f of arquivos) {
+    const t = semComentarios(read('docs', 'js', f));
+    assert.equal(/challenges\.cloudflare\.com/.test(t), f === 'auth-view.js', 'o endereço do Cloudflare deve existir só em auth-view.js (achei em ' + f + ')');
+  }
 });
 
 test('03_marcas_com_hora.sql: só ACRESCENTA a coluna (sem apagar, sem mexer em valores) e confere tudo antes de valer', () => {

@@ -6,7 +6,7 @@
 (function (App) {
   'use strict';
   var d = App.dom, F = App.fmt, E = window.Engine, D = App.data, h = d.h;
-  App.version = '1.5.0';
+  App.version = '1.6.0';
   App.views = App.views || {};
 
   var state = App.state = {
@@ -259,6 +259,7 @@
 
   function startApp(fromCache) {
     buildShell();
+    setTimeout(function () { App.bio.offer(); }, 2500);   // uma vez só: "Entrar com a digital?" (só onde o aparelho sabe pedir a digital)
     var cache = D.readCache(state.user.id);
     if (cache) { state.data = cache.data; state.savedAt = cache.at; }
     if (fromCache) { state.offline = true; updateBanner(); App.render(false); return; }
@@ -316,12 +317,17 @@
     });
   };
 
-  // Abre o app: confere a sessão guardada e entra (ou mostra o login).
+  // Abre o app: confere a sessão guardada e entra (ou mostra o login). Com a digital ligada neste aparelho, ela é pedida
+  // antes de mostrar qualquer coisa do orçamento (se a pergunta der defeito, o app abre: o defeito não pode tirar o app do ar).
   App.resume = function () {
     return D.openSession().then(function (r) {
-      if (r.session) return App.enter(r.session, { offline: r.offline });
-      D.wipeAll();
-      App.authView.login(App.root());
+      if (!r.session) { D.wipeAll(); App.authView.login(App.root()); return; }
+      return Promise.resolve().then(function () { return App.bio.gate(r.session.user.id); }).then(function (open) { return open; }, function (e) {
+        if (window.console) console.error(e);
+        return true;
+      }).then(function (open) {
+        if (open) return App.enter(r.session, { offline: r.offline });
+      });
     });
   };
 
@@ -333,6 +339,7 @@
     var hash = location.hash || '';
     var recovery = /(^|[#&])type=recovery(&|$)/.test(hash), linkError = /(^|[#&])error(_code|_description)?=/.test(hash);
     if (!D.init()) return App.authView.setup(root, D.problem());
+    App.bio.watch();                       // voltar para o app depois de um tempo pede a digital (se estiver ligada)
     var recoveryShown = false;
     D.onAuth(function (event) {
       if (event === 'PASSWORD_RECOVERY') { recoveryShown = true; App.authView.newPassword(root); }

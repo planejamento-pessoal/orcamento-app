@@ -459,6 +459,16 @@ button.melhor:active { filter: brightness(.96); }
 .capa .passos { margin: 0 0 18px; padding-left: 22px; font-size: 17px; color: var(--tinta-2); }
 .capa code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; background: var(--folha-2); padding: 1px 5px; border-radius: 3px; border: 1px solid var(--regua); }
 
+/* verificação de segurança do login (Cloudflare Turnstile): quase sempre invisível; só ocupa espaço quando precisa de um toque */
+.captcha-caixa { margin: 6px 0 2px; }
+.captcha-nota { margin: 4px 0 0; }
+.captcha-nota:empty { display: none; }
+
+/* tela de bloqueio da digital: cobre tudo; com o app em segundo plano o conteúdo some antes de qualquer foto da tela */
+.trava { position: fixed; inset: 0; z-index: 60; overflow-y: auto; background: var(--folha); color: var(--tinta); }
+.trava .capa { min-height: 100%; }
+html.trava-escondida #app, html.trava-escondida .sheet, html.trava-escondida .scrim, html.trava-escondida .toast, html.trava-escondida .faixa-versao { visibility: hidden; }
+
 .carregando { padding: 60px 16px; text-align: center; font-size: 18px; color: var(--tinta-3); }
 
 /* ── saldo na 99Pay (só leitura, só admin) ─────────────────────────────── */
@@ -470,3 +480,39 @@ button.melhor:active { filter: brightness(.96); }
 .s99-status { margin: 0; padding: 0 16px; }
 .s99-status:not(:empty) { padding-bottom: 8px; }
 .s99-status.erro { font-weight: 600; color: var(--vermelho); }
+
+/* ── relatórios (aba Conta → painel com o relatório pronto) ──────────────── */
+.relatorio .rel-resumo { padding: 0 0 4px; }
+.relatorio .ex-saldo .v { font-size: 32px; }
+.relatorio .rel-frase { margin: 8px 0 0; font-size: 16px; font-weight: 600; }
+.rel-titulo { display: flex; justify-content: space-between; align-items: baseline; margin-top: 20px; padding-bottom: 6px; border-bottom: 2px solid var(--regua-forte); }
+.rel-titulo h3 { font-size: 20px; font-weight: 700; }
+.rel-titulo .total { font-size: 17px; font-weight: 600; color: var(--tinta-2); font-variant-numeric: tabular-nums; }
+.rel-lista { list-style: none; margin: 0; padding: 0; }
+.rel-lista li { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 0 10px; align-items: baseline; padding: 9px 0; border-bottom: 1px solid var(--regua); }
+.rel-dia { text-align: right; font-size: 16px; color: var(--tinta-3); font-variant-numeric: tabular-nums; }
+.rel-nome { font-size: 17px; font-weight: 500; line-height: 1.2; overflow-wrap: anywhere; }
+.rel-meta { display: block; margin-top: 2px; font-size: 14px; font-weight: 400; color: var(--tinta-3); }
+.rel-val { text-align: right; font-size: 17px; font-weight: 500; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.rel-val.real { color: var(--azul); font-weight: 700; }
+.rel-est { display: block; font-size: 13px; font-weight: 600; color: var(--tinta-3); }
+.rel-est.ok { color: var(--ok); }
+.rel-tabela { width: 100%; margin-top: 18px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.rel-tabela caption { text-align: left; padding-bottom: 6px; font-size: 20px; font-weight: 700; border-bottom: 2px solid var(--regua-forte); }
+.rel-tabela th, .rel-tabela td { padding: 9px 4px; text-align: right; font-size: 16px; white-space: nowrap; border-bottom: 1px solid var(--regua); }
+.rel-tabela thead th { font-size: 14px; font-weight: 500; color: var(--tinta-3); }
+.rel-tabela th:first-child, .rel-tabela td:first-child { text-align: left; padding-left: 0; font-weight: 500; }
+.rel-tabela th:last-child, .rel-tabela td:last-child { padding-right: 0; }
+.rel-tabela .ic-ok { color: var(--ok); } .rel-tabela .ic-low { color: var(--ambar); } .rel-tabela .ic-neg { color: var(--vermelho); }
+.rel-extras { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 6px; }
+
+/* imprimir o relatório: a classe imprime-rel só existe enquanto a pessoa manda imprimir (account-view.js); sem ela o app imprime como sempre */
+@media print {
+  html.imprime-rel #app, html.imprime-rel .scrim, html.imprime-rel .toast, html.imprime-rel .faixa-versao, html.imprime-rel .trava { display: none !important; }
+  html.imprime-rel body { background: #fff; }
+  html.imprime-rel .sheet { position: static; display: block; max-width: none; max-height: none; margin: 0; border-radius: 0; animation: none; background: #fff; }
+  html.imprime-rel .sheet, html.imprime-rel .sheet * { color: #000 !important; background: transparent !important; }
+  html.imprime-rel .sheet-topo .icon-btn, html.imprime-rel .sheet-pe, html.imprime-rel .rel-extras { display: none !important; }
+  html.imprime-rel .sheet-corpo { overflow: visible; max-height: none; padding: 0; }
+  html.imprime-rel .rel-lista li, html.imprime-rel .rel-tabela tr { break-inside: avoid; }
+}

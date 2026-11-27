@@ -22,12 +22,17 @@ function policyOf(html) {
   return m ? m[2] : null;
 }
 
+// Além dos hashes e do blob:, o script-src leva o endereço da verificação de segurança do Cloudflare (Turnstile).
+// É o único site de fora que pode entregar script ao app; o tests/launcher.test.js trava essa lista.
+const SCRIPT_FORA = ['https://challenges.cloudflare.com'];
+
 // Devolve o HTML com o script-src da política refeito com os hashes de agora.
 function withHashes(html) {
   if (!META.test(html)) throw new Error('docs/index.html sem a meta Content-Security-Policy');
   const hashes = cspHashes(html);
   if (!hashes.length) throw new Error('nenhum bloco de script encontrado no docs/index.html');
-  return html.replace(META, (all, a, csp, c) => a + csp.replace(/script-src [^;]*/, 'script-src ' + hashes.join(' ') + ' blob:') + c);
+  const fonte = 'script-src ' + hashes.join(' ') + ' blob: ' + SCRIPT_FORA.join(' ');
+  return html.replace(META, (all, a, csp, c) => a + csp.replace(/script-src [^;]*/, fonte) + c);
 }
 
-module.exports = { cspHashes, withHashes, policyOf };
+module.exports = { cspHashes, withHashes, policyOf, SCRIPT_FORA };

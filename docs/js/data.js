@@ -65,6 +65,10 @@
   function explain(err) {
     var msg = String((err && (err.message || err.error_description || err.msg || err.details)) || err || '');
     if (/Failed to fetch|NetworkError|Load failed|fetch failed|network request/i.test(msg)) return 'Sem conexão com a internet. Tente de novo.';
+    // "apagar convite já usado" (arquivo 04_apagar_convite.sql): o banco ainda não tem a função
+    if (/admin_delete_invite/i.test(msg) && /could not find|schema cache|does not exist|PGRST202|42883/i.test(msg)) return 'O banco ainda não tem o "apagar convite usado". No Supabase, rode o arquivo 04_apagar_convite.sql (é seguro: não apaga nada seu) e tente de novo.';
+    // verificação do Cloudflare recusada pelo Supabase (código vencido, repetido ou ausente)
+    if (/captcha/i.test(msg)) return 'A verificação de segurança não passou. Espere um instante e tente de novo. Se continuar, feche e abra o app.';
     if (/Invalid login credentials/i.test(msg)) return 'E-mail ou senha incorretos.';
     if (/already registered|already been registered|User already/i.test(msg)) return 'Este e-mail já tem conta. Toque em Entrar.';
     if (/Email not confirmed/i.test(msg)) return 'Falta confirmar o e-mail. Abra o link que chegou na sua caixa de entrada e depois entre.';
@@ -135,13 +139,31 @@
     // Chamamos o app fora do callback (regra do supabase-js: nada de await dentro dele)
     return sb.auth.onAuthStateChange(function (event, session) { setTimeout(function () { cb(event, session); }, 0); });
   }
-  function signIn(email, password) {
-    return sb.auth.signInWithPassword({ email: email, password: password }).then(function (r) {
+  // Verificação do Cloudflare (Turnstile). No config.js vai só a chave do SITE (pública, feita para ficar no app); a chave
+  // SECRETA fica apenas no painel do Supabase e nunca passa por aqui. Sem chave (ou com um valor que não parece chave do
+  // site), o app funciona como sempre e nada é mostrado nem enviado. Quem EXIGE a verificação é o Supabase (Authentication,
+  // Attack Protection): o app só pega o código com o Cloudflare e o manda junto com entrar, criar conta e "esqueci a senha".
+  function captchaKey() {
+    var k = cfg && typeof cfg.TURNSTILE_SITEKEY === 'string' ? cfg.TURNSTILE_SITEKEY.trim() : '';
+    return /^[0-9A-Za-z_-]{20,32}$/.test(k) ? k : null;   // a chave SECRETA do Cloudflare é maior (35): nunca é aceita aqui
+  }
+  // O campo TURNSTILE_SITEKEY está preenchido, mas com algo que não é chave de site (a SECRETA colada por engano, um pedaço
+  // de chave, texto qualquer)? Vazio ou ausente não é problema: é o app sem verificação. Nunca devolve o valor.
+  function captchaProblem() {
+    var v = cfg ? cfg.TURNSTILE_SITEKEY : undefined;
+    if (v === undefined || v === null) return false;
+    if (typeof v !== 'string') return true;
+    return v.trim() !== '' && captchaKey() === null;
+  }
+  // Os pedidos só levam o código quando ele existe: sem a verificação ligada, o pedido é igual ao de sempre.
+  function withToken(args, token) { if (token) args.options = { captchaToken: token }; return args; }
+  function signIn(email, password, token) {
+    return sb.auth.signInWithPassword(withToken({ email: email, password: password }, token)).then(function (r) {
       return r.error ? fail(r.error) : good({ session: r.data.session });
     }, fail);
   }
-  function signUp(email, password) {
-    return sb.auth.signUp({ email: email, password: password }).then(function (r) {
+  function signUp(email, password, token) {
+    return sb.auth.signUp(withToken({ email: email, password: password }, token)).then(function (r) {
       if (r.error) return fail(r.error);
       var u = r.data && r.data.user;
       if (u && Array.isArray(u.identities) && u.identities.length === 0) return fail({ message: 'User already registered' });
@@ -163,9 +185,11 @@
       sb.auth.signOut().then(finish, finish);
     });
   }
-  function resetPassword(email) {
+  function resetPassword(email, token) {
     var back = location.origin + location.pathname;
-    return sb.auth.resetPasswordForEmail(email, { redirectTo: back }).then(function (r) { return r.error ? fail(r.error) : good(); }, fail);
+    var opts = { redirectTo: back };
+    if (token) opts.captchaToken = token;
+    return sb.auth.resetPasswordForEmail(email, opts).then(function (r) { return r.error ? fail(r.error) : good(); }, fail);
   }
   // Senha nova depois do link do e-mail ("esqueci a senha"): a sessão do link já prova quem é.
   function updatePassword(pw) {
@@ -174,8 +198,8 @@
   // Troca de senha com a pessoa já logada: confere a senha ATUAL antes. Protege contra
   // celular desbloqueado na mão de outra pessoa. O pedido também leva current_password,
   // para o servidor exigir a mesma coisa quando "Require current password" estiver ligado.
-  function changePassword(email, current, next) {
-    return sb.auth.signInWithPassword({ email: email, password: current }).then(function (r) {
+  function changePassword(email, current, next, token) {
+    return sb.auth.signInWithPassword(withToken({ email: email, password: current }, token)).then(function (r) {
       if (r.error) {
         var m = String(r.error.message || r.error.code || '');
         return /Invalid login credentials|invalid_credentials/i.test(m) ? { ok: false, error: 'A senha atual está incorreta.', raw: r.error } : fail(r.error);
@@ -580,6 +604,12 @@
   function revokeInvite(code) {
     return sb.rpc('admin_revoke_invite', { p_code: code }).then(function (r) { return r.error ? fail(r.error) : good(); }, fail);
   }
+  // Apagar um convite da lista. O que ainda não foi usado usa a função que já existia (admin_revoke_invite), então isso
+  // funciona mesmo antes de rodar o 04. O já usado precisa da admin_delete_invite (arquivo 04_apagar_convite.sql): a pessoa
+  // que usou o convite continua com o acesso dela; só some o registro do convite.
+  function deleteInvite(code, used) {
+    return sb.rpc(used ? 'admin_delete_invite' : 'admin_revoke_invite', { p_code: code }).then(function (r) { return r.error ? fail(r.error) : good(); }, fail);
+  }
   function setRole(userId, role) {
     return sb.rpc('admin_set_role', { p_user: userId, p_role: role }).then(function (r) { return r.error ? fail(r.error) : good(); }, fail);
   }
@@ -587,13 +617,13 @@
   App.data = {
     store: store, configured: configured, configProblem: configProblem, problem: function () { return problem; }, init: init, explain: explain, uuid: uuid,
     getSession: getSession, openSession: openSession, wipeAll: wipeAll, profileKey: function (uid) { return PROFILE_KEY + uid; },
-    onAuth: onAuth, signIn: signIn, signUp: signUp, signOut: signOut, resetPassword: resetPassword,
+    onAuth: onAuth, captchaKey: captchaKey, captchaProblem: captchaProblem, signIn: signIn, signUp: signUp, signOut: signOut, resetPassword: resetPassword,
     updatePassword: updatePassword, changePassword: changePassword,
     loadProfile: loadProfile, redeem: redeem, loadAll: loadAll, readCache: readCache, clearCache: clearCache, patchCache: patchCache,
     createItem: createItem, updateItem: updateItem, deleteItem: deleteItem, applyEdit: applyEdit, saveSettings: saveSettings, setSettled: setSettled,
     createPurchase: createPurchase, updatePurchase: updatePurchase, deletePurchase: deletePurchase,
     loadSaldo99: loadSaldo99, readSaldo99: readSaldo99, saldo99Summary: saldo99Summary, saldo99Text: saldo99Text, saldo99Hint: saldo99Hint, saldo99Reply: saldo99Reply,
     saldoReal: saldoReal, sameSaldoReal: sameSaldoReal, markTime: markTime,
-    listProfiles: listProfiles, listInvites: listInvites, createInvite: createInvite, revokeInvite: revokeInvite, setRole: setRole
+    listProfiles: listProfiles, listInvites: listInvites, createInvite: createInvite, revokeInvite: revokeInvite, deleteInvite: deleteInvite, setRole: setRole
   };
 })(window.App = window.App || {});
