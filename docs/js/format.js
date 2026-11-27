@@ -146,10 +146,165 @@
     return Math.ceil(m / 60) + ' h';
   }
 
+  // ── relatórios: texto para compartilhar e planilha (CSV) ─────────────────
+  // O relatório vem pronto do motor (Engine.monthReport / Engine.periodReport); aqui ele só vira texto. Sem Intl, sem rede.
+  function p2(n) { return (n < 10 ? '0' : '') + n; }
+  function stampOf(now) {
+    var d = now instanceof Date && !isNaN(now) ? now : new Date();
+    return p2(d.getDate()) + '/' + p2(d.getMonth() + 1) + '/' + d.getFullYear() + ' às ' + p2(d.getHours()) + ':' + p2(d.getMinutes());
+  }
+  function reportTitle(rep) {
+    return rep.kind === 'mes' ? 'Relatório de ' + monthLong(rep.month) : 'Relatório de ' + monthShort(rep.from) + ' a ' + monthShort(rep.to);
+  }
+  // Nome do arquivo (sem a extensão): relatorio-2026-10  ou  relatorio-2026-01-a-2026-12
+  function reportFile(rep) {
+    return rep.kind === 'mes' ? 'relatorio-' + rep.month : 'relatorio-' + rep.from + '-a-' + rep.to;
+  }
+  // Mesma legenda que a aba Mês põe embaixo do nome: "Cartão, Parcela 2 de 10, no CAIXA VISA"
+  function lineMeta(l) {
+    var parts = [];
+    if (l.card) parts.push('Cartão');
+    if (l.inst && l.inst.n > 1) parts.push('Parcela ' + l.inst.k + ' de ' + l.inst.n);
+    if (l.cardName) parts.push('no ' + l.cardName);
+    return parts.join(', ');
+  }
+  function lineState(l, kind) { return l.settled ? (kind === 'entrada' ? 'recebido' : 'pago') : (kind === 'entrada' ? 'a receber' : 'a pagar'); }
+  // O que "dar baixa" já fez e o que falta (só depois da primeira marca, como na aba Mês). '' quando não há o que dizer.
+  function baixaText(b, kind) {
+    if (!b || !b.n || !b.feitas) return '';
+    if (b.feitas === b.n) return kind === 'entrada' ? 'Tudo recebido.' : 'Tudo pago.';
+    var faltam = b.n - b.feitas;
+    return (kind === 'entrada' ? 'Já recebido: ' : 'Já pago: ') + money(b.feito) + ' (' + b.feitas + ' de ' + b.n + ') · ' +
+      (kind === 'entrada' ? 'Falta receber: ' : 'Falta pagar: ') + money(b.falta) + ' (' + faltam + ')';
+  }
+  // A frase do saldo, igual à etiqueta da aba Mês
+  function statusText(rep) {
+    var s = rep.status, minTxt = money(rep.minCents);
+    if (s === null) return rep.startMonth ? 'O saldo acumulado começa em ' + monthShort(rep.startMonth) : 'O saldo acumulado ainda não começou';
+    return s === 'ok' ? 'Acima do mínimo de ' + minTxt : s === 'low' ? 'Abaixo do mínimo de ' + minTxt : 'Saldo negativo';
+  }
+  function liveNote(asOf) {
+    return asOf == null || isNaN(asOf) ? '' : 'O saldo do fim do mês parte da leitura da 99Pay de ' + whenShort(new Date(asOf).toISOString()) +
+      '. O que foi marcado como pago ou recebido depois dessa hora ainda conta como a pagar ou a receber.';
+  }
+  // Período que passa pelo mês do saldo lido da 99Pay: diz de onde vem o "Resultado" desse mês (é o mesmo da aba Projeção).
+  function periodLiveNote(rep) {
+    var lv = rep.rows.filter(function (r) { return r.live; })[0];
+    return lv ? 'Em ' + monthShort(lv.month) + ' o saldo parte da leitura da 99Pay. Por isso o resultado desse mês é quanto o saldo muda (como na aba Projeção), e o resultado do período pode não ser entradas menos saídas.' : '';
+  }
+
+  function monthText(rep) {
+    var L = [], c = rep.carry;
+    L.push('RESUMO');
+    if (c && c.cents != null) L.push('Veio de ' + monthName(c.prev) + (c.real ? ' (corrigido)' : '') + ': ' + money(c.cents));
+    L.push('Entradas: ' + money(rep.totalEntradas));
+    L.push('Saídas: ' + money(rep.totalSaidas));
+    L.push('Resultado do mês: ' + money(rep.resultado, { sign: true }));
+    L.push('Saldo no fim do mês: ' + (rep.saldo == null ? '—' : money(rep.saldo)));
+    L.push('Situação: ' + statusText(rep));
+    var ln = liveNote(rep.liveAsOf);
+    if (ln) L.push(ln);
+    [['saida', 'SAÍDAS', rep.saidas, rep.totalSaidas, rep.baixa.saidas, 'Nenhuma saída neste mês.'],
+      ['entrada', 'ENTRADAS', rep.entradas, rep.totalEntradas, rep.baixa.entradas, 'Nenhuma entrada neste mês.']].forEach(function (s) {
+      L.push('');
+      L.push(s[1] + ' — ' + money(s[3]));
+      if (!s[2].length) L.push(s[5]);
+      s[2].forEach(function (l) {
+        L.push((l.day ? 'dia ' + l.day + ' · ' : '') + l.name + ' — ' + money(l.cents) + ' (' + lineState(l, s[0]) + ')');
+        var meta = lineMeta(l);
+        if (meta) L.push('   ' + meta);
+      });
+      var bx = baixaText(s[4], s[0]);
+      if (bx) L.push(bx);
+    });
+    return L;
+  }
+  function periodText(rep) {
+    var L = [];
+    L.push('RESUMO');
+    L.push('Entradas no período: ' + money(rep.totalEntradas));
+    L.push('Saídas no período: ' + money(rep.totalSaidas));
+    L.push('Resultado do período: ' + money(rep.resultado, { sign: true }));
+    if (rep.min === null) L.push('Saldo: o saldo acumulado começa em ' + (rep.startMonth ? monthShort(rep.startMonth) : 'um mês que ainda não foi definido') + '.');
+    else {
+      L.push('Menor saldo: ' + money(rep.min) + ' em ' + monthShort(rep.minMonth));
+      L.push('Saldo no fim: ' + money(rep.last));
+      L.push(rep.firstNeg ? 'Fica negativo a partir de ' + monthShort(rep.firstNeg) + '.'
+        : rep.firstLow ? 'Fica abaixo do mínimo (' + money(rep.minCents) + ') a partir de ' + monthShort(rep.firstLow) + '.'
+          : 'Sempre acima do mínimo de ' + money(rep.minCents) + '.');
+    }
+    L.push('');
+    L.push('MÊS A MÊS');
+    rep.rows.forEach(function (r) {
+      var sit = r.status === 'neg' ? ' (negativo)' : r.status === 'low' ? ' (abaixo do mínimo)' : '';
+      L.push(monthShort(r.month) + ' — saldo ' + (r.saldo == null ? 'não calculado' : money(r.saldo)) + sit);
+      L.push('   entradas ' + money(r.entradas) + ' · saídas ' + money(r.saidas));
+    });
+    L.push('');
+    L.push('Meses que ainda não chegaram são previsão: só contam o que repete todo mês ou o que já foi lançado.');
+    var pn = periodLiveNote(rep);
+    if (pn) L.push(pn);
+    return L;
+  }
+  // O texto do relatório, pronto para compartilhar ou copiar (uma linha por item da lista)
+  function reportText(rep, now) {
+    var head = ['Orçamento — ' + reportTitle(rep).replace(/^R/, 'r'), 'Gerado em ' + stampOf(now), ''];
+    return head.concat(rep.kind === 'mes' ? monthText(rep) : periodText(rep)).join('\n');
+  }
+
+  // CSV para abrir no Excel / Planilhas (versão em português: separador ";" e vírgula nos decimais).
+  // Valor em número puro (sem R$ e sem ponto de milhar) para a planilha poder somar. Texto que começa com = + - @ ganha um
+  // apóstrofo na frente: sem isso a planilha trataria o nome de um item como fórmula.
+  function csvNum(c) {
+    if (c == null || isNaN(c)) return '';
+    var neg = c < 0, a = Math.abs(Math.round(c)), frac = a % 100;
+    return (neg ? '-' : '') + Math.floor(a / 100) + ',' + (frac < 10 ? '0' : '') + frac;
+  }
+  function csvText(v) {
+    var s = String(v == null ? '' : v).replace(/[\r\n]+/g, ' ');
+    if (/^[=+\-@\t]/.test(s)) s = "'" + s;
+    return /[;"]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  function reportCsv(rep, now) {
+    var rows = [];
+    function row(cells) { rows.push(cells.join(';')); }
+    row([csvText('Orçamento'), csvText(reportTitle(rep))]);
+    row([csvText('Gerado em'), csvText(stampOf(now))]);
+    rows.push('');
+    if (rep.kind === 'mes') {
+      row(['Tipo', 'Dia', 'Item', 'Detalhe', 'Valor', 'Situação']);
+      [['saida', 'Saída', rep.saidas], ['entrada', 'Entrada', rep.entradas]].forEach(function (s) {
+        s[2].forEach(function (l) { row([csvText(s[1]), l.day == null ? '' : String(l.day), csvText(l.name), csvText(lineMeta(l)), csvNum(l.cents), csvText(lineState(l, s[0]))]); });
+      });
+      rows.push('');
+      var c = rep.carry;
+      if (c && c.cents != null) row([csvText('Resumo'), '', csvText('Veio de ' + monthName(c.prev) + (c.real ? ' (corrigido)' : '')), '', csvNum(c.cents), '']);
+      row([csvText('Resumo'), '', csvText('Entradas'), '', csvNum(rep.totalEntradas), '']);
+      row([csvText('Resumo'), '', csvText('Saídas'), '', csvNum(rep.totalSaidas), '']);
+      row([csvText('Resumo'), '', csvText('Resultado do mês'), '', csvNum(rep.resultado), '']);
+      row([csvText('Resumo'), '', csvText('Saldo no fim do mês'), '', csvNum(rep.saldo), csvText(statusText(rep))]);
+      var ln = liveNote(rep.liveAsOf);
+      if (ln) { rows.push(''); row([csvText('Observação'), '', csvText(ln), '', '', '']); }
+    } else {
+      row(['Mês', 'Entradas', 'Saídas', 'Resultado', 'Saldo', 'Situação']);
+      rep.rows.forEach(function (r) {
+        row([csvText(monthShort(r.month)), csvNum(r.entradas), csvNum(r.saidas), csvNum(r.resultado), csvNum(r.saldo),
+          csvText(r.status === 'neg' ? 'negativo' : r.status === 'low' ? 'abaixo do mínimo' : r.status === 'ok' ? 'acima do mínimo' : 'antes do saldo inicial')]);
+      });
+      rows.push('');
+      row([csvText('Total'), csvNum(rep.totalEntradas), csvNum(rep.totalSaidas), csvNum(rep.resultado), '', '']);
+      var pn = periodLiveNote(rep);
+      if (pn) { rows.push(''); row([csvText('Observação'), csvText(pn), '', '', '', '']); }
+    }
+    return rows.join('\r\n') + '\r\n';
+  }
+
   return {
     monthName: monthName, monthAbbr: monthAbbr, monthShort: monthShort, monthLong: monthLong, monthTick: monthTick,
     currentMonth: currentMonth, money: money, plain: plain, compact: compact, parseMoney: parseMoney,
     normalizeCode: normalizeCode, prettyCode: prettyCode, passwordProblem: passwordProblem, dueText: dueText, whenShort: whenShort, dateShort: dateShort,
-    toMs: toMs, agoText: agoText, waitText: waitText
+    toMs: toMs, agoText: agoText, waitText: waitText,
+    stampOf: stampOf, reportTitle: reportTitle, reportFile: reportFile, reportText: reportText, reportCsv: reportCsv, reportLineMeta: lineMeta,
+    reportLineState: lineState, reportBaixaText: baixaText, reportStatusText: statusText, reportLiveNote: liveNote, reportPeriodLiveNote: periodLiveNote
   };
 });

@@ -388,6 +388,55 @@
     return { min: min, minMonth: minMonth, firstNeg: firstNeg, firstLow: firstLow, last: last };
   }
 
+  // ── relatórios ─────────────────────────────────────────────────────────
+  // Só juntam, num objeto simples, as MESMAS contas que as abas Mês (monthView + timeline) e Projeção (timeline + summarize)
+  // já mostram: nenhum número é calculado aqui por conta própria, então o relatório nunca discorda da tela.
+  // O número cru que o banco informou (a leitura da 99Pay, só admin) NÃO entra em nenhum campo. No mês em que o saldo parte
+  // dele, o relatório só traz o instante da leitura (liveAsOf), para dizer isso em texto; o saldo do fim do mês é a "sobra
+  // prevista" que a aba Mês já mostra. Quem pede o relatório vê os mesmos números da própria aba Mês.
+  // Atenção: isso NÃO esconde o saldo lido de quem recebe o relatório do mês atual. Com a sobra prevista e a lista do que falta
+  // pagar e receber (tudo isso também está na aba Mês), dá para refazer a conta e chegar ao saldo lido.
+  function reportLine(l) {
+    var it = l.item;
+    return {
+      day: it.due_day || null, name: String(it.name == null ? '' : it.name), cents: l.cents, settled: !!l.settled, real: l.source === 'real',
+      card: it.type === 'cartao', cardName: it.card_name ? String(it.card_name) : '', inst: l.inst ? { k: l.inst.k, n: l.inst.n } : null
+    };
+  }
+  function reportBaixa(b) { return { n: b.n, feitas: b.feitas, feito: b.feito, falta: b.falta }; }
+  function monthReport(idx, settings, month) {
+    var v = monthView(idx, month), tl = timeline(idx, settings, month, 1)[0], minC = minCents(settings);
+    return {
+      kind: 'mes', month: v.month,
+      // a conta corrente: de onde veio a sobra (o valor some quando é o saldo lido do banco)
+      carry: v.carry ? { prev: v.carry.prev, cents: v.carry.live ? null : v.carry.cents, real: !!v.carry.real, live: !!v.carry.live } : null,
+      entradas: v.entradas.map(reportLine), saidas: v.saidas.map(reportLine),
+      totalEntradas: v.totalEntradas, totalSaidas: v.totalSaidas, resultado: v.resultado,
+      baixa: { entradas: reportBaixa(v.baixa.entradas), saidas: reportBaixa(v.baixa.saidas) },
+      saldo: tl.saldo, status: statusOf(tl.saldo, minC), minCents: minC,
+      startMonth: settings && settings.balance_start_month ? normMonth(settings.balance_start_month) : null,
+      liveAsOf: v.live ? v.live.asOf : null
+    };
+  }
+  // Vários meses seguidos (de 1 a 120), a partir de fromMonth: uma linha por mês, igual à tabela da aba Projeção.
+  function periodReport(idx, settings, fromMonth, count) {
+    var n = Math.max(1, Math.min(120, Math.floor(Number(count)) || 1));
+    var tl = timeline(idx, settings, fromMonth, n), minC = minCents(settings), sum = summarize(tl, minC), ent = 0, sai = 0, res = 0, anyLive = false;
+    var rows = tl.map(function (p) {
+      // "Resultado" de cada mês = o que a aba Projeção mostra: entradas − saídas e, só no mês que parte do saldo lido da 99Pay,
+      // quanto o saldo muda naquele mês (p.live.variacao). O resultado do período é a soma dessa coluna.
+      var r = p.live ? p.live.variacao : p.resultado;
+      ent += p.entradas; sai += p.saidas; res += r; if (p.live) anyLive = true;
+      return { month: p.month, entradas: p.entradas, saidas: p.saidas, resultado: r, saldo: p.saldo, status: statusOf(p.saldo, minC), live: !!p.live };
+    });
+    return {
+      kind: 'periodo', from: rows[0].month, to: rows[rows.length - 1].month, count: rows.length, rows: rows,
+      totalEntradas: ent, totalSaidas: sai, resultado: res,
+      min: sum.min, minMonth: sum.minMonth, firstNeg: sum.firstNeg, firstLow: sum.firstLow, last: sum.last, minCents: minC,
+      startMonth: settings && settings.balance_start_month ? normMonth(settings.balance_start_month) : null, hasLive: anyLive
+    };
+  }
+
   // ── edição de valores: o que gravar quando a pessoa muda um valor ─────
   // scope 'mes'    → só aquele mês
   // scope 'adiante'→ daquele mês em diante (vira/continua item que repete)
@@ -671,6 +720,7 @@
     isLive: function (idx, month) { return liveAt(idx, mi(month)); },
     liveOf: function (idx) { return idx.live ? { month: ms(idx.live.m), cents: idx.live.cents, asOf: idx.live.asOf } : null; },
     monthView: monthView, totalsAt: totalsAt, timeline: timeline, statusOf: statusOf, summarize: summarize,
+    monthReport: monthReport, periodReport: periodReport,
     planEdit: planEdit, planSettle: planSettle, planCarryAuto: planCarryAuto, planCarry: planCarry, newOps: newOps,
     splitInstallments: splitInstallments, expandSpec: expandSpec, withSims: withSims,
     minCents: minCents, scenario: scenario, waysToPay: waysToPay, cashFitMonth: cashFitMonth,
