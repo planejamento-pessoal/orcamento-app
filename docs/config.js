@@ -13,5 +13,8 @@
    ════════════════════════════════════════════════════════════════════════ */
 window.APP_CONFIG = {
   SUPABASE_URL: 'https://tgxfkeqrwahnieesnlyd.supabase.co',
-  SUPABASE_ANON_KEY: 'sb_publishable_Jt2PgjEnd4mHCxOEuGaIMw_8E7erB6H'
+  SUPABASE_ANON_KEY: 'sb_publishable_Jt2PgjEnd4mHCxOEuGaIMw_8E7erB6H',
+  // Chave PÚBLICA do widget do Cloudflare Turnstile (a verificação do login). A chave SECRETA do Cloudflare
+  // nunca vem para este arquivo: ela fica só no painel do Supabase (Authentication, Attack Protection).
+  TURNSTILE_SITEKEY: '0x4AAAAAAGWXiSd4Vf-IrKg7'
 };
