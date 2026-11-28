@@ -372,9 +372,9 @@ test('app.js: toda mudança na leitura (e todo carregamento de dados) passa por 
   assert.equal([...a.matchAll(/state\.data = null;/g)].length >= 5, true);
 });
 
-test('app.js: a versão é 1.6.0 e o saldo lido nunca vira parte da cópia do aparelho (cache.data)', () => {
+test('app.js: a versão é 1.6.1 e o saldo lido nunca vira parte da cópia do aparelho (cache.data)', () => {
   const a = read('docs', 'js', 'app.js');
-  assert.match(a, /App\.version = '1\.6\.0';/);
+  assert.match(a, /App\.version = '1\.6\.1';/);
   const cache = a.indexOf('state.data = cache.data');
   assert.ok(cache > 0, 'a cópia do aparelho só alimenta state.data na abertura');
 });

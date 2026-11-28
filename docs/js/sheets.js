@@ -114,7 +114,7 @@
     var scopeBox = h('div', { 'class': 'campo' }, h('span', { 'class': 'rot', text: 'Aplicar em' }), scope.el, scopeHint);
     scopeBox.hidden = isCC;                                   // a conta corrente não repete: não existe "deste mês em diante"
 
-    var name = h('input', { 'class': 'entrada', type: 'text', maxlength: 80, autocomplete: 'off', value: item.name });
+    var name = d.textInput({ maxlength: 80, value: item.name });
     var due = dueInput(item);
     var end = monthField('Termina em', monthOf(item.end_month), { allowEmpty: true, placeholder: 'Sem fim', emptyLabel: 'Sem fim', fallback: month, help: 'Depois desse mês o valor deixa de repetir.' });
     var card = item.type === 'parcela' ? cardSelect(item.card_name) : null;
@@ -293,7 +293,7 @@
     if (!App.can()) { d.toast('Sua conta é somente leitura.', 'erro'); return; }
     month = month || F.currentMonth();
     var tipo = d.segmented(KINDS, kind || 'conta', function () { layout(); }, 'Tipo de item');
-    var name = h('input', { 'class': 'entrada', type: 'text', maxlength: 80, autocomplete: 'off', placeholder: 'Ex.: Nubank, Internet, Salário' });
+    var name = d.textInput({ maxlength: 80, placeholder: 'Ex.: Nubank, Internet, Salário' });
     var due = dueInput(null);
     var start = monthField('Começa em', month, { fallback: month });
     var amount = d.moneyInput(0);
