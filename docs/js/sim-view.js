@@ -53,7 +53,7 @@
     // ── formulário ───────────────────────────────────────────────────────
     var err = h('p', { 'class': 'erro-txt', role: 'alert', hidden: true });
     var tipo = d.segmented([{ v: 'compra', t: 'Compra' }, { v: 'renda', t: 'Renda nova' }], form.tipo, function (v) { form.tipo = v; App.render(true); }, 'O que simular');
-    var nome = h('input', { 'class': 'entrada', type: 'text', maxlength: 60, autocomplete: 'off', placeholder: form.tipo === 'compra' ? 'Ex.: Fogão' : 'Ex.: Aumento, extra', value: form.nome, on: { input: function () { form.nome = this.value; } } });
+    var nome = d.textInput({ maxlength: 60, placeholder: form.tipo === 'compra' ? 'Ex.: Fogão' : 'Ex.: Aumento, extra', value: form.nome, on: { input: function () { form.nome = this.value; } } });
     var total = d.moneyInput(0, { 'aria-label': form.tipo === 'compra' ? 'Valor total' : 'Valor por mês' });
     total.value = form.total;
     var info = h('div', { 'class': 'ajuda', style: 'font-size:15px;color:var(--tinta-2);margin:-6px 0 14px' });
@@ -437,14 +437,14 @@
     if (!App.can()) { if (cur) openReadOnly(cur); return; }
     var p0 = cur || { name: '', priority: 3, status: 'nada', est_amount: 0, final_amount: null, exec_month: F.currentMonth() + '-01', inst_total: null, inst_count: null, category: null, supplier: null, model: null };
 
-    var name = h('input', { 'class': 'entrada', type: 'text', maxlength: 80, autocomplete: 'off', placeholder: 'Ex.: Fogão, Guarda-roupa', value: p0.name || '' });
+    var name = d.textInput({ maxlength: 80, placeholder: 'Ex.: Fogão, Guarda-roupa', value: p0.name || '' });
     var prio = d.segmented([1, 2, 3, 4, 5].map(function (n) { return { v: String(n), t: String(n) }; }), String(p0.priority), function () { refresh(); }, 'Prioridade');
     var status = d.segmented(STATUS, p0.status, function () { refresh(); }, 'Situação');
     var est = d.moneyInput(E.cents(p0.est_amount || 0), { 'aria-label': 'Valor estimado' });
     var fin = d.moneyInput(p0.final_amount != null ? E.cents(p0.final_amount) : 0, { 'aria-label': 'Valor final' });
     var tot = d.moneyInput(p0.inst_total != null ? E.cents(p0.inst_total) : 0, { 'aria-label': 'Total parcelado' });
     var nParc = h('input', { 'class': 'entrada', type: 'number', inputmode: 'numeric', min: 2, max: 120, placeholder: 'Sem parcelas', 'aria-label': 'Número de parcelas', value: p0.inst_count ? String(p0.inst_count) : '' });
-    var cat = h('input', { 'class': 'entrada', type: 'text', maxlength: 40, autocomplete: 'off', placeholder: 'Ex.: Eletro, Móvel, Reforma', value: p0.category || '' });
+    var cat = d.textInput({ maxlength: 40, placeholder: 'Ex.: Eletro, Móvel, Reforma', value: p0.category || '' });
     var sup = h('input', { 'class': 'entrada', type: 'text', maxlength: 80, autocomplete: 'off', placeholder: 'Loja, site ou pessoa', value: p0.supplier || '' });
     var mod = h('input', { 'class': 'entrada', type: 'text', maxlength: 80, autocomplete: 'off', placeholder: 'Modelo (opcional)', value: p0.model || '' });
     var execM = App.sheets.monthField('Mês previsto', monthOf(p0.exec_month), {

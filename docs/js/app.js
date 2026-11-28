@@ -6,7 +6,7 @@
 (function (App) {
   'use strict';
   var d = App.dom, F = App.fmt, E = window.Engine, D = App.data, h = d.h;
-  App.version = '1.6.0';
+  App.version = '1.6.1';
   App.views = App.views || {};
 
   var state = App.state = {

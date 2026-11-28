@@ -237,6 +237,15 @@
     if (cents != null && cents !== 0) el.value = F.money(cents, { bare: true });
     return el;
   }
+  // Caixa de texto livre (nome de conta, de simulação ou de compra, categoria...) com o CORRETOR ORTOGRÁFICO LIGADO.
+  // No Android (WebView do APK) o corretor só aparece se a página pedir: sem spellcheck="true" ele fica desligado.
+  // Não use em senha, e-mail, código ou valor (corretor ali só atrapalha): esses seguem com h('input', ...).
+  // Uma caixa nova de texto livre precisa usar esta função; o teste tests/corretor.test.js avisa se esquecer.
+  function textInput(extra) {
+    var attrs = { 'class': 'entrada', type: 'text', autocomplete: 'off', spellcheck: 'true', autocorrect: 'on' };
+    if (extra) for (var k in extra) attrs[k] = extra[k];
+    return h('input', attrs);
+  }
   // Grupo de botões (um escolhido). opts: [{v, t}]
   function segmented(opts, value, onChange, label) {
     var cur = value, el = h('div', { 'class': 'seg', role: 'group', 'aria-label': label || null });
@@ -310,7 +319,7 @@
   App.dom = {
     h: h, s: s, clear: clear, icon: icon, statusIcon: statusIcon, STATUS_TXT: STATUS_TXT, toast: toast,
     openSheet: openSheet, closeAllSheets: closeAllSheets, sheetsOpen: sheetsOpen, confirmBox: confirmBox, pickMonth: pickMonth,
-    field: field, moneyInput: moneyInput, segmented: segmented, checkRow: checkRow, chave: chave, chaveRow: chaveRow,
+    field: field, moneyInput: moneyInput, textInput: textInput, segmented: segmented, checkRow: checkRow, chave: chave, chaveRow: chaveRow,
     copyText: copyText, shareText: shareText, debounce: debounce
   };
 })(window.App = window.App || {});
